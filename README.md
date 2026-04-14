@@ -20,7 +20,7 @@ A robust command-line interface for analyzing Indicators of Compromise (IOCs) in
 
 ---
 
-**About more:** [Sheep Analyze Web](https://sheep.byfranke.com/pages/analyze.html) | [Sheep Manual](https://github.com/byfranke/sheep)
+**About more:** [Analyze Web](https://byfranke.com/pages/analyze.html) | [Sheep Manual](https://github.com/byfranke/sheep)
 
 ## Installation
 
