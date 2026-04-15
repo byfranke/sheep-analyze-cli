@@ -29,30 +29,22 @@ A robust command-line interface for analyzing Indicators of Compromise (IOCs) in
 - Python 3.7 or higher
 - pip package manager
 
+### Get Analyze CLI
+
+```bash
+# Run the interactive setup wizard (recommended)
+curl -fsSL https://byfranke.com/analyze-cli-install | bash
+```
+
 ### Install from Source
 
 ```bash
-# Clone the repository
+# Or install manually
 git clone https://github.com/byfranke/analyze-cli
 cd analyze-cli
-
-# Run the interactive setup wizard (recommended)
 chmod +x analyze-cli.py setup.py install.sh
 bash install.sh
 python3 setup.py
-```
-```
-# Or install manually
-pip install -r requirements.txt
-
-```
-
-### Install System-wide (Optional)
-
-```bash
-# Install to /usr/local/bin for system-wide access
-sudo cp analyze-cli.py /usr/local/bin/analyze-cli
-sudo chmod +x /usr/local/bin/analyze-cli
 ```
 
 ## Configuration
