@@ -3,6 +3,8 @@
 set -e
 
 GITHUB_REPO="https://github.com/byfranke/analyze-cli"
+GITHUB_RAW="https://raw.githubusercontent.com/byfranke/analyze-cli/main"
+INSTALL_DIR="$HOME/.analyze-cli"
 MIN_PYTHON_VERSION="3.7"
 
 download_file() {
@@ -66,15 +68,48 @@ fi
 
 echo "[OK] pip found"
 
+if [ ! -f "requirements.txt" ] || [ ! -f "analyze-cli.py" ]; then
+    echo ""
+    echo "Downloading Analyze-CLI..."
+    
+    mkdir -p "$INSTALL_DIR"
+    cd "$INSTALL_DIR"
+    
+    if command -v git >/dev/null 2>&1; then
+        if [ -d "$INSTALL_DIR/.git" ]; then
+            echo "Updating existing installation..."
+            git pull --quiet
+        else
+            rm -rf "$INSTALL_DIR"/* 2>/dev/null || true
+            git clone --quiet "$GITHUB_REPO.git" "$INSTALL_DIR"
+        fi
+        echo "[OK] Repository cloned"
+    else
+        echo "Downloading files directly..."
+        download_file "$GITHUB_RAW/analyze-cli.py" "analyze-cli.py"
+        download_file "$GITHUB_RAW/setup.py" "setup.py"
+        download_file "$GITHUB_RAW/requirements.txt" "requirements.txt"
+        download_file "$GITHUB_RAW/LICENSE" "LICENSE" 2>/dev/null || true
+        download_file "$GITHUB_RAW/README.md" "README.md" 2>/dev/null || true
+        echo "[OK] Files downloaded"
+    fi
+fi
+
+WORK_DIR="${INSTALL_DIR:-$(pwd)}"
+cd "$WORK_DIR"
+
 echo ""
 echo "Installing dependencies..."
 
 install_deps() {
-    if pip3 install -r requirements.txt --user 2>&1 | grep -q "Successfully installed\|already satisfied"; then
+    local output
+    output=$(pip3 install -r requirements.txt --user 2>&1) || true
+    
+    if echo "$output" | grep -q "Successfully installed\|already satisfied\|Requirement already"; then
         return 0
     fi
     
-    if pip3 install -r requirements.txt --user 2>&1 | grep -q "externally-managed-environment"; then
+    if echo "$output" | grep -q "externally-managed-environment"; then
         echo ""
         echo "System uses externally managed Python (PEP 668)."
         echo "Trying: pip3 install --break-system-packages..."
@@ -93,6 +128,7 @@ if ! install_deps; then
     echo "Please try one of these options manually:"
     echo ""
     echo "Option 1: Use a virtual environment (recommended):"
+    echo "  cd $WORK_DIR"
     echo "  python3 -m venv venv"
     echo "  source venv/bin/activate"
     echo "  pip install -r requirements.txt"
@@ -112,17 +148,33 @@ echo "[OK] Dependencies installed"
 
 chmod +x analyze-cli.py setup.py
 
+if [ -t 0 ] && { [ -w /usr/local/bin ] || command -v sudo >/dev/null 2>&1; }; then
+    echo ""
+    read -p "Install analyze-cli system-wide to /usr/local/bin? [y/N] " -n 1 -r </dev/tty
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        if [ -w /usr/local/bin ]; then
+            ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
+        else
+            sudo ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
+        fi
+        echo "[OK] Installed to /usr/local/bin/analyze-cli"
+    fi
+fi
+
 echo ""
 echo "================================="
 echo "  Installation Complete!"
 echo "================================="
 echo ""
+echo "Installation directory: $WORK_DIR"
+echo ""
 echo "Next steps:"
 echo "1. Configure your API token:"
-echo "   python3 setup.py"
+echo "   cd $WORK_DIR && python3 setup.py"
 echo ""
 echo "2. Test the installation:"
-echo "   ./analyze-cli.py --version"
+echo "   $WORK_DIR/analyze-cli.py --version"
 echo ""
-echo "For help: ./analyze-cli.py --help"
+echo "For help: $WORK_DIR/analyze-cli.py --help"
 echo "GitHub: $GITHUB_REPO"
