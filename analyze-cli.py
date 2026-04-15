@@ -71,6 +71,43 @@ class IOCAnalyzer:
                 f"Documentation: {GITHUB_REPO}"
             )
 
+    def _session_cache_path(self) -> Optional[Path]:
+        """Path for the per-terminal-session decrypted token cache."""
+        try:
+            sid = os.getsid(os.getpid())
+        except (AttributeError, OSError):
+            return None
+        uid = os.getuid() if hasattr(os, "getuid") else 0
+        return Path(f"/tmp/analyze-cli-sess-{uid}-{sid}")
+
+    def _read_session_cache(self) -> Optional[str]:
+        """Read cached token for current terminal session, if valid."""
+        cache = self._session_cache_path()
+        if cache is None or not cache.exists():
+            return None
+        try:
+            st = cache.stat()
+            if hasattr(os, "getuid") and st.st_uid != os.getuid():
+                return None
+            if st.st_mode & 0o077:
+                return None
+            token = cache.read_text().strip()
+            return token or None
+        except Exception:
+            return None
+
+    def _write_session_cache(self, token: str) -> None:
+        """Store decrypted token in a per-session cache file."""
+        cache = self._session_cache_path()
+        if cache is None:
+            return
+        try:
+            fd = os.open(str(cache), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as f:
+                f.write(token)
+        except Exception:
+            pass
+
     def _decrypt_token(self, encrypted_token: str, password: str) -> Optional[str]:
         """Decrypt token with password"""
         if not ENCRYPTION_AVAILABLE:
@@ -118,6 +155,11 @@ class IOCAnalyzer:
             if "api" in config:
                 # Check for encrypted token
                 if config["api"].get("encryption_enabled") == "true" and "encrypted_token" in config["api"]:
+                    # Try per-session cache first so the password is only asked once per terminal session
+                    cached = self._read_session_cache()
+                    if cached:
+                        return cached
+
                     encrypted_token = config["api"]["encrypted_token"]
                     console.print("[yellow]Token is encrypted. Enter your master password:[/yellow]")
 
@@ -125,6 +167,7 @@ class IOCAnalyzer:
                         password = getpass("Master Password: ")
                         token = self._decrypt_token(encrypted_token, password)
                         if token:
+                            self._write_session_cache(token)
                             return token
                         console.print(f"[red]Invalid password. {2-attempt} attempts remaining.[/red]")
 
@@ -462,6 +505,12 @@ Copyright (c) 2026 byFranke - Security Solutions
         help="Show about information and legal notices"
     )
 
+    parser.add_argument(
+        "--logout",
+        action="store_true",
+        help="Clear the cached decrypted token for the current terminal session"
+    )
+
     args = parser.parse_args()
 
     # Handle about information
@@ -485,6 +534,20 @@ Integrates with multiple threat intelligence sources:
 • And more...
         """
         console.print(Panel(about_info, title="About Analyze-CLI", style="cyan"))
+        return
+
+    # Handle session logout
+    if args.logout:
+        try:
+            analyzer = IOCAnalyzer.__new__(IOCAnalyzer)
+            cache = analyzer._session_cache_path()
+            if cache and cache.exists():
+                cache.unlink()
+                console.print("[green]Session token cache cleared[/green]")
+            else:
+                console.print("[yellow]No cached session token to clear[/yellow]")
+        except Exception as e:
+            console.print(f"[red]Failed to clear session cache: {e}[/red]")
         return
 
     # Handle setup wizard
