@@ -14,10 +14,10 @@ CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
 # Variables
-CONFIG_DIR="$HOME/.analyze-cli"
+INSTALL_DIR="$HOME/.analyze-cli"
 BACKUP_DIR="$HOME/.analyze-cli-backup-$(date +%Y%m%d-%H%M%S)"
-SYSTEM_INSTALL="/usr/local/bin/analyze-cli"
-CURRENT_DIR="$(dirname "$(readlink -f "$0")")"
+SYSTEM_BIN="/usr/local/bin/analyze-cli"
+LOCAL_BIN="$HOME/.local/bin/analyze-cli"
 
 echo -e "${CYAN}================================="
 echo "  Analyze-CLI Uninstaller"
@@ -57,18 +57,18 @@ ask_yes_no() {
 check_installation() {
     local installed=false
 
-    if [ -f "$CURRENT_DIR/analyze-cli.py" ]; then
-        print_info "Found Analyze-CLI in current directory"
+    if [ -d "$INSTALL_DIR" ]; then
+        print_info "Found installation directory: $INSTALL_DIR"
         installed=true
     fi
 
-    if [ -d "$CONFIG_DIR" ]; then
-        print_info "Found configuration directory: $CONFIG_DIR"
+    if [ -f "$SYSTEM_BIN" ]; then
+        print_info "Found system-wide installation: $SYSTEM_BIN"
         installed=true
     fi
 
-    if [ -f "$SYSTEM_INSTALL" ]; then
-        print_info "Found system-wide installation: $SYSTEM_INSTALL"
+    if [ -f "$LOCAL_BIN" ]; then
+        print_info "Found local bin installation: $LOCAL_BIN"
         installed=true
     fi
 
@@ -81,46 +81,46 @@ check_installation() {
 
 # Backup configuration files
 backup_config() {
-    if [ -d "$CONFIG_DIR" ]; then
+    if [ -d "$INSTALL_DIR" ]; then
         echo ""
         if ask_yes_no "Do you want to backup your configuration files before uninstalling?"; then
             print_info "Creating backup at: $BACKUP_DIR"
             mkdir -p "$BACKUP_DIR"
 
-            # Backup config files
-            if [ -f "$CONFIG_DIR/config.ini" ]; then
-                cp "$CONFIG_DIR/config.ini" "$BACKUP_DIR/" 2>/dev/null || true
+            if [ -f "$INSTALL_DIR/config.ini" ]; then
+                cp "$INSTALL_DIR/config.ini" "$BACKUP_DIR/" 2>/dev/null || true
                 print_success "Backed up config.ini"
             fi
 
-            if [ -f "$CONFIG_DIR/.key" ]; then
-                cp "$CONFIG_DIR/.key" "$BACKUP_DIR/" 2>/dev/null || true
+            if [ -f "$INSTALL_DIR/.key" ]; then
+                cp "$INSTALL_DIR/.key" "$BACKUP_DIR/" 2>/dev/null || true
                 print_success "Backed up encryption key"
             fi
 
-            # Create restore script
             cat > "$BACKUP_DIR/restore.sh" << 'EOF'
 #!/bin/bash
-# Restore script for Analyze-CLI configuration
-
 BACKUP_DIR="$(dirname "$(readlink -f "$0")")"
-CONFIG_DIR="$HOME/.analyze-cli"
+INSTALL_DIR="$HOME/.analyze-cli"
 
 echo "Restoring Analyze-CLI configuration..."
+echo "Note: You need to reinstall Analyze-CLI first:"
+echo "  curl -fsSL https://raw.githubusercontent.com/byfranke/analyze-cli/main/install.sh | bash"
+echo ""
 
-# Create config directory
-mkdir -p "$CONFIG_DIR"
+if [ ! -d "$INSTALL_DIR" ]; then
+    echo "[ERROR] Installation directory not found. Please reinstall first."
+    exit 1
+fi
 
-# Restore files
 if [ -f "$BACKUP_DIR/config.ini" ]; then
-    cp "$BACKUP_DIR/config.ini" "$CONFIG_DIR/"
-    chmod 600 "$CONFIG_DIR/config.ini"
+    cp "$BACKUP_DIR/config.ini" "$INSTALL_DIR/"
+    chmod 600 "$INSTALL_DIR/config.ini"
     echo "[OK] Restored config.ini"
 fi
 
 if [ -f "$BACKUP_DIR/.key" ]; then
-    cp "$BACKUP_DIR/.key" "$CONFIG_DIR/"
-    chmod 600 "$CONFIG_DIR/.key"
+    cp "$BACKUP_DIR/.key" "$INSTALL_DIR/"
+    chmod 600 "$INSTALL_DIR/.key"
     echo "[OK] Restored encryption key"
 fi
 
@@ -134,29 +134,55 @@ EOF
     fi
 }
 
-# Remove system-wide installation
-remove_system_install() {
-    if [ -f "$SYSTEM_INSTALL" ]; then
+# Remove symlinks
+remove_symlinks() {
+    local removed=false
+
+    if [ -f "$SYSTEM_BIN" ]; then
         echo ""
-        if ask_yes_no "Remove system-wide installation from /usr/local/bin?"; then
-            if sudo rm -f "$SYSTEM_INSTALL"; then
-                print_success "Removed system-wide installation"
+        if ask_yes_no "Remove system-wide symlink from /usr/local/bin?"; then
+            if sudo rm -f "$SYSTEM_BIN"; then
+                print_success "Removed $SYSTEM_BIN"
+                removed=true
             else
-                print_error "Failed to remove system-wide installation (may require sudo)"
+                print_error "Failed to remove $SYSTEM_BIN (may require sudo)"
             fi
         fi
     fi
+
+    if [ -f "$LOCAL_BIN" ] || [ -L "$LOCAL_BIN" ]; then
+        echo ""
+        if ask_yes_no "Remove symlink from ~/.local/bin?"; then
+            if rm -f "$LOCAL_BIN"; then
+                print_success "Removed $LOCAL_BIN"
+                removed=true
+            else
+                print_error "Failed to remove $LOCAL_BIN"
+            fi
+        fi
+    fi
+
+    if [ "$removed" = false ]; then
+        print_info "No symlinks to remove"
+    fi
 }
 
-# Remove configuration directory
-remove_config_dir() {
-    if [ -d "$CONFIG_DIR" ]; then
+# Remove installation directory
+remove_install_dir() {
+    if [ -d "$INSTALL_DIR" ]; then
         echo ""
-        if ask_yes_no "Remove configuration directory (~/.analyze-cli)?"; then
-            if rm -rf "$CONFIG_DIR"; then
-                print_success "Removed configuration directory"
+        print_warning "This will remove the entire installation directory:"
+        echo "  $INSTALL_DIR"
+        echo ""
+        echo "Contents:"
+        ls -la "$INSTALL_DIR" 2>/dev/null | head -15
+        echo ""
+
+        if ask_yes_no "Remove installation directory (~/.analyze-cli)?"; then
+            if rm -rf "$INSTALL_DIR"; then
+                print_success "Removed installation directory"
             else
-                print_error "Failed to remove configuration directory"
+                print_error "Failed to remove installation directory"
             fi
         fi
     fi
@@ -197,72 +223,33 @@ remove_dependencies() {
     fi
 }
 
-# Remove local files
-remove_local_files() {
+# Clean up PATH entries (optional info)
+show_path_cleanup_info() {
     echo ""
-    print_warning "This will remove Analyze-CLI files from the current directory:"
-    echo "  $CURRENT_DIR"
+    print_info "If you added ~/.local/bin to your PATH, you may want to remove it from:"
+    echo "  - ~/.bashrc"
+    echo "  - ~/.zshrc"
+    echo "  - ~/.profile"
     echo ""
-    echo "Files to be removed:"
-    [ -f "$CURRENT_DIR/analyze-cli.py" ] && echo "  - analyze-cli.py"
-    [ -f "$CURRENT_DIR/setup.py" ] && echo "  - setup.py"
-    [ -f "$CURRENT_DIR/install.sh" ] && echo "  - install.sh"
-    [ -f "$CURRENT_DIR/requirements.txt" ] && echo "  - requirements.txt"
-    [ -f "$CURRENT_DIR/README.md" ] && echo "  - README.md"
-    [ -f "$CURRENT_DIR/LICENSE" ] && echo "  - LICENSE"
-    [ -f "$CURRENT_DIR/VERSION" ] && echo "  - VERSION"
-    [ -f "$CURRENT_DIR/CHANGELOG.md" ] && echo "  - CHANGELOG.md"
-    [ -f "$CURRENT_DIR/.gitignore" ] && echo "  - .gitignore"
-    echo ""
-
-    if ask_yes_no "Remove all Analyze-CLI files from current directory?"; then
-        # Remove files
-        rm -f "$CURRENT_DIR/analyze-cli.py" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/setup.py" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/install.sh" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/requirements.txt" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/README.md" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/LICENSE" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/VERSION" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/CHANGELOG.md" 2>/dev/null || true
-        rm -f "$CURRENT_DIR/.gitignore" 2>/dev/null || true
-
-        print_success "Removed local files"
-
-        # Note about uninstall script
-        print_warning "Note: This uninstall script (uninstall.sh) will remain for your records"
-        print_info "You can manually delete it if desired: rm $0"
-    else
-        print_info "Skipping local file removal"
-    fi
+    echo "Look for lines containing: export PATH=\"\$HOME/.local/bin:\$PATH\""
 }
 
 # Clean up system caches
 cleanup_caches() {
     echo ""
-    if ask_yes_no "Clean up Python caches and temporary files?"; then
-        # Clean pip cache related to analyze-cli
+    if ask_yes_no "Clean up Python caches?"; then
         print_info "Cleaning pip cache..."
         pip3 cache purge 2>/dev/null || pip cache purge 2>/dev/null || true
-
-        # Remove __pycache__ if exists
-        if [ -d "$CURRENT_DIR/__pycache__" ]; then
-            rm -rf "$CURRENT_DIR/__pycache__"
-            print_success "Removed Python cache directory"
-        fi
-
         print_success "Cache cleanup completed"
     fi
 }
 
 # Main uninstall process
 main() {
-    # Check if running as root (not recommended)
     if [ "$EUID" -eq 0 ]; then
         print_warning "Running as root is not recommended unless removing system-wide installation"
     fi
 
-    # Check what's installed
     check_installation
 
     echo ""
@@ -275,23 +262,17 @@ main() {
         exit 0
     fi
 
-    # Backup configuration
     backup_config
 
-    # Remove system-wide installation
-    remove_system_install
+    remove_symlinks
 
-    # Remove configuration directory
-    remove_config_dir
-
-    # Ask about dependencies
     remove_dependencies
 
-    # Remove local files
-    remove_local_files
+    remove_install_dir
 
-    # Clean up caches
     cleanup_caches
+
+    show_path_cleanup_info
 
     # Final message
     echo ""

@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import platform
-import shutil
 from pathlib import Path
 from getpass import getpass
 import base64
@@ -353,88 +352,51 @@ By continuing, you agree to our terms and privacy policy.
             return
 
         try:
-            repo_path = Path.home() / ".analyze-cli" / "repo"
+            install_dir = Path.home() / ".analyze-cli"
 
-            if repo_path.exists():
+            if (install_dir / ".git").exists():
                 console.print("Pulling latest updates...")
-                repo = git.Repo(repo_path)
+                repo = git.Repo(install_dir)
                 origin = repo.remotes.origin
                 origin.pull()
+                console.print("[green][OK][/green] Updated successfully!")
             else:
-                console.print(f"Cloning from {GITHUB_REPO}...")
-                repo_path.parent.mkdir(exist_ok=True)
-                git.Repo.clone_from(GITHUB_REPO, repo_path)
+                console.print(f"[yellow]Repository not found at {install_dir}[/yellow]")
+                console.print(f"To reinstall, run:")
+                console.print(f"  curl -fsSL https://raw.githubusercontent.com/byfranke/analyze-cli/main/install.sh | bash")
+                return
 
-            remote_version_file = repo_path / "VERSION"
-            if remote_version_file.exists():
-                remote_version = remote_version_file.read_text().strip()
-
-                if remote_version != self.current_version:
-                    console.print(f"[yellow]New version available: {remote_version} (current: {self.current_version})[/yellow]")
-
-                    if Confirm.ask("Do you want to update now?"):
-                        self.perform_update(repo_path)
+            version_file = install_dir / "VERSION"
+            if version_file.exists():
+                new_version = version_file.read_text().strip()
+                if new_version != self.current_version:
+                    console.print(f"[green]Updated to version {new_version}[/green]")
                 else:
-                    console.print(f"[green][OK][/green] You have the latest version ({self.current_version})")
+                    console.print(f"[green][OK][/green] Already at latest version ({self.current_version})")
 
         except Exception as e:
             console.print(f"[yellow]Could not check for updates: {e}[/yellow]")
 
-    def perform_update(self, repo_path: Path):
-        """Perform the update from repository"""
+    def check_system_installation(self):
+        """Check if analyze-cli is accessible from PATH"""
+        console.print("\n[bold cyan]Checking Installation[/bold cyan]")
+        
         try:
-            backup_dir = Path.home() / ".analyze-cli" / "backup"
-            backup_dir.mkdir(exist_ok=True)
-
-            current_dir = Path(__file__).parent
-
-            for file in ['analyze-cli.py', 'requirements.txt', 'VERSION']:
-                src = repo_path / file
-                if src.exists():
-                    old_file = current_dir / file
-                    if old_file.exists():
-                        shutil.copy2(old_file, backup_dir / f"{file}.bak")
-
-                    shutil.copy2(src, current_dir / file)
-
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--user", "--upgrade"],
+            result = subprocess.run(
+                ["which", "analyze-cli"],
                 capture_output=True,
-                check=True
+                text=True
             )
-
-            console.print("[green][OK][/green] Update completed successfully!")
-            console.print(f"[dim]Backup saved to: {backup_dir}[/dim]")
-
-        except Exception as e:
-            console.print(f"[red]Update failed: {e}[/red]")
-            console.print("[yellow]Please update manually from GitHub[/yellow]")
-
-    def system_installation(self):
-        """Offer system-wide installation"""
-        console.print("\n[bold cyan]System Installation[/bold cyan]")
-
-        if Confirm.ask("Install analyze-cli system-wide? (requires sudo)"):
-            try:
-                subprocess.run(["sudo", "-n", "true"], capture_output=True, check=True)
-            except subprocess.CalledProcessError:
-                console.print("[yellow]This requires administrator privileges[/yellow]")
-                console.print("Please enter your password:")
-
-            try:
-                script_path = Path(__file__).parent / "analyze-cli.py"
-                subprocess.run(
-                    ["sudo", "cp", str(script_path), "/usr/local/bin/analyze-cli"],
-                    check=True
-                )
-                subprocess.run(
-                    ["sudo", "chmod", "+x", "/usr/local/bin/analyze-cli"],
-                    check=True
-                )
-                console.print("[green][OK][/green] Installed to /usr/local/bin/analyze-cli")
-                console.print("You can now run 'analyze-cli' from anywhere")
-            except subprocess.CalledProcessError as e:
-                console.print(f"[red]Installation failed: {e}[/red]")
+            if result.returncode == 0:
+                console.print(f"[green][OK][/green] analyze-cli is available at: {result.stdout.strip()}")
+                return True
+            else:
+                console.print("[yellow]analyze-cli not found in PATH[/yellow]")
+                console.print("To reinstall, run:")
+                console.print("  curl -fsSL https://raw.githubusercontent.com/byfranke/analyze-cli/main/install.sh | bash")
+                return False
+        except Exception:
+            return False
 
     def display_summary(self):
         """Display setup summary and next steps"""
@@ -445,15 +407,15 @@ By continuing, you agree to our terms and privacy policy.
 [bold]Quick Start Guide:[/bold]
 
 1. Test your installation:
-   [cyan]./analyze-cli.py --version[/cyan]
+   [cyan]analyze-cli --version[/cyan]
 
 2. Analyze an IOC:
-   [cyan]./analyze-cli.py 8.8.8.8[/cyan]
-   [cyan]./analyze-cli.py example.com[/cyan]
-   [cyan]./analyze-cli.py CVE-2021-44228[/cyan]
+   [cyan]analyze-cli 8.8.8.8[/cyan]
+   [cyan]analyze-cli example.com[/cyan]
+   [cyan]analyze-cli CVE-2021-44228[/cyan]
 
 3. Get help:
-   [cyan]./analyze-cli.py --help[/cyan]
+   [cyan]analyze-cli --help[/cyan]
 
 4. Check for updates:
    [cyan]python3 setup.py --update[/cyan]
@@ -481,7 +443,7 @@ By continuing, you agree to our terms and privacy policy.
         if Confirm.ask("\n[bold]Check for updates from GitHub?[/bold]"):
             self.check_for_updates()
 
-        self.system_installation()
+        self.check_system_installation()
 
         self.display_summary()
 

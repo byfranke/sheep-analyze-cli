@@ -148,17 +148,48 @@ echo "[OK] Dependencies installed"
 
 chmod +x analyze-cli.py setup.py
 
-if [ -t 0 ] && { [ -w /usr/local/bin ] || command -v sudo >/dev/null 2>&1; }; then
-    echo ""
-    read -p "Install analyze-cli system-wide to /usr/local/bin? [y/N] " -n 1 -r </dev/tty
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        if [ -w /usr/local/bin ]; then
-            ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
-        else
-            sudo ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
-        fi
+echo ""
+echo "Setting up command-line access..."
+
+INSTALLED_PATH=""
+
+if [ -w /usr/local/bin ]; then
+    ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
+    INSTALLED_PATH="/usr/local/bin/analyze-cli"
+    echo "[OK] Installed to /usr/local/bin/analyze-cli"
+elif command -v sudo >/dev/null 2>&1; then
+    if sudo ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli 2>/dev/null; then
+        INSTALLED_PATH="/usr/local/bin/analyze-cli"
         echo "[OK] Installed to /usr/local/bin/analyze-cli"
+    fi
+fi
+
+if [ -z "$INSTALLED_PATH" ]; then
+    mkdir -p "$HOME/.local/bin"
+    ln -sf "$WORK_DIR/analyze-cli.py" "$HOME/.local/bin/analyze-cli"
+    INSTALLED_PATH="$HOME/.local/bin/analyze-cli"
+    echo "[OK] Installed to ~/.local/bin/analyze-cli"
+    
+    if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
+        echo ""
+        echo "[INFO] Adding ~/.local/bin to PATH..."
+        
+        SHELL_RC=""
+        if [ -n "$BASH_VERSION" ]; then
+            SHELL_RC="$HOME/.bashrc"
+        elif [ -n "$ZSH_VERSION" ]; then
+            SHELL_RC="$HOME/.zshrc"
+        elif [ -f "$HOME/.bashrc" ]; then
+            SHELL_RC="$HOME/.bashrc"
+        elif [ -f "$HOME/.zshrc" ]; then
+            SHELL_RC="$HOME/.zshrc"
+        fi
+        
+        if [ -n "$SHELL_RC" ]; then
+            echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
+            echo "[OK] Added to $SHELL_RC"
+            echo "[INFO] Run 'source $SHELL_RC' or restart terminal to use 'analyze-cli'"
+        fi
     fi
 fi
 
@@ -167,14 +198,17 @@ echo "================================="
 echo "  Installation Complete!"
 echo "================================="
 echo ""
-echo "Installation directory: $WORK_DIR"
+echo "You can now use: analyze-cli"
 echo ""
-echo "Next steps:"
-echo "1. Configure your API token:"
-echo "   cd $WORK_DIR && python3 setup.py"
-echo ""
-echo "2. Test the installation:"
-echo "   $WORK_DIR/analyze-cli.py --version"
-echo ""
-echo "For help: $WORK_DIR/analyze-cli.py --help"
 echo "GitHub: $GITHUB_REPO"
+
+echo ""
+echo "Starting configuration..."
+echo ""
+
+cd "$WORK_DIR"
+if [ -t 0 ]; then
+    python3 setup.py
+else
+    python3 setup.py </dev/tty
+fi
