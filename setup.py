@@ -14,7 +14,6 @@ from getpass import getpass
 import base64
 import configparser
 
-# Check and install dependencies first
 def check_dependencies():
     """Check if required packages are installed"""
     required = ['rich', 'cryptography', 'keyring', 'GitPython']
@@ -30,9 +29,7 @@ def check_dependencies():
         print("Installing missing dependencies...")
         print(f"Missing packages: {', '.join(missing)}")
 
-        # Install missing packages
         try:
-            # Try with --user first
             result = subprocess.run(
                 [sys.executable, "-m", "pip", "install"] + missing + ["--user"],
                 capture_output=True,
@@ -66,17 +63,14 @@ def check_dependencies():
             print(f"  pip install -r requirements.txt")
             sys.exit(1)
 
-# Check dependencies before importing
 check_dependencies()
 
-# Now import the packages
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 
-# Optional imports with fallback
 try:
     import keyring
     KEYRING_AVAILABLE = True
@@ -99,7 +93,6 @@ except ImportError:
 
 console = Console()
 
-# Constants
 GITHUB_REPO = "https://github.com/byfranke/analyze-cli"
 CONFIG_DIR = Path.home() / ".analyze-cli"
 CONFIG_FILE = CONFIG_DIR / "config.ini"
@@ -174,7 +167,6 @@ class SecureTokenManager:
         with open(CONFIG_FILE, 'w') as f:
             config.write(f)
 
-        # Set restrictive permissions
         os.chmod(CONFIG_FILE, 0o600)
 
     def use_system_keyring(self, token: str):
@@ -208,11 +200,9 @@ class AnalyzeSetup:
         """Display welcome message with privacy notice"""
         console.clear()
 
-        # Header
         header = "ANALYZE-CLI SETUP WIZARD v1.0\nIOC Analysis & Threat Intelligence"
         console.print(Panel(header, style="bold cyan"))
 
-        # Privacy Notice
         privacy_notice = f"""
 [bold]Privacy & Legal Notice:[/bold]
 • Privacy Policy: {PRIVACY_POLICY}
@@ -261,7 +251,6 @@ By continuing, you agree to our terms and privacy policy.
             task = progress.add_task("Installing packages...", total=None)
 
             try:
-                # Try with --user first
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--user"],
                     capture_output=True,
@@ -273,13 +262,11 @@ By continuing, you agree to our terms and privacy policy.
                     console.print("[green][OK][/green] Dependencies installed successfully")
                     return
 
-                # Check if it's PEP 668 error
                 if "externally-managed-environment" in result.stderr:
                     progress.stop()
                     console.print("\n[yellow]System uses externally managed Python (PEP 668)[/yellow]")
 
                     if Confirm.ask("\nWould you like to install with --break-system-packages?"):
-                        # Try with --break-system-packages
                         progress.start()
                         result2 = subprocess.run(
                             [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--break-system-packages"],
@@ -307,7 +294,6 @@ By continuing, you agree to our terms and privacy policy.
                     console.print("   pip3 install -r requirements.txt --break-system-packages")
                     sys.exit(1)
                 else:
-                    # Other error
                     progress.stop()
                     console.print(f"[red]Error installing dependencies: {result.stderr}[/red]")
                     sys.exit(1)
@@ -322,13 +308,11 @@ By continuing, you agree to our terms and privacy policy.
         console.print("\n[bold cyan]API Token Configuration[/bold cyan]")
         console.print("Your API token will be encrypted and password-protected.\n")
 
-        # Check if encryption is available
         if not ENCRYPTION_AVAILABLE:
             console.print("[red]Error: Encryption libraries not available.[/red]")
             console.print("Please install: pip3 install cryptography --break-system-packages")
             return False
 
-        # Get token
         console.print("[yellow]Enter your API token (hidden for security):[/yellow]")
         token = getpass("Token: ").strip()
 
@@ -336,7 +320,6 @@ By continuing, you agree to our terms and privacy policy.
             console.print("[red]Error: Token cannot be empty[/red]")
             return False
 
-        # Set up encryption password
         console.print("\n[bold]Set a master password for token encryption[/bold]")
         console.print("[dim]This password will be required to decrypt your token[/dim]")
 
@@ -354,7 +337,6 @@ By continuing, you agree to our terms and privacy policy.
 
             break
 
-        # Save encrypted token
         self.token_manager.save_encrypted_token(token, password)
         console.print("[green][OK][/green] Token encrypted and saved securely")
         console.print("[yellow]Note: You'll need to enter your master password when using the CLI[/yellow]")
@@ -371,22 +353,18 @@ By continuing, you agree to our terms and privacy policy.
             return
 
         try:
-            # Clone or pull the repository
             repo_path = Path.home() / ".analyze-cli" / "repo"
 
             if repo_path.exists():
-                # Pull updates
                 console.print("Pulling latest updates...")
                 repo = git.Repo(repo_path)
                 origin = repo.remotes.origin
                 origin.pull()
             else:
-                # Clone repository
                 console.print(f"Cloning from {GITHUB_REPO}...")
                 repo_path.parent.mkdir(exist_ok=True)
                 git.Repo.clone_from(GITHUB_REPO, repo_path)
 
-            # Check version
             remote_version_file = repo_path / "VERSION"
             if remote_version_file.exists():
                 remote_version = remote_version_file.read_text().strip()
@@ -405,25 +383,20 @@ By continuing, you agree to our terms and privacy policy.
     def perform_update(self, repo_path: Path):
         """Perform the update from repository"""
         try:
-            # Backup current files
             backup_dir = Path.home() / ".analyze-cli" / "backup"
             backup_dir.mkdir(exist_ok=True)
 
             current_dir = Path(__file__).parent
 
-            # Copy new files
             for file in ['analyze-cli.py', 'requirements.txt', 'VERSION']:
                 src = repo_path / file
                 if src.exists():
-                    # Backup old file
                     old_file = current_dir / file
                     if old_file.exists():
                         shutil.copy2(old_file, backup_dir / f"{file}.bak")
 
-                    # Copy new file
                     shutil.copy2(src, current_dir / file)
 
-            # Update dependencies
             subprocess.run(
                 [sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "--user", "--upgrade"],
                 capture_output=True,
@@ -443,7 +416,6 @@ By continuing, you agree to our terms and privacy policy.
 
         if Confirm.ask("Install analyze-cli system-wide? (requires sudo)"):
             try:
-                # Check if we have sudo access
                 subprocess.run(["sudo", "-n", "true"], capture_output=True, check=True)
             except subprocess.CalledProcessError:
                 console.print("[yellow]This requires administrator privileges[/yellow]")
@@ -469,7 +441,6 @@ By continuing, you agree to our terms and privacy policy.
         console.print("\n" + "="*50)
         console.print(Panel("[bold green]Setup Completed Successfully![/bold green]", style="green"))
 
-        # Quick start guide
         guide = f"""
 [bold]Quick Start Guide:[/bold]
 
@@ -500,24 +471,18 @@ By continuing, you agree to our terms and privacy policy.
 
         console.print("\n[bold]Starting Setup Process...[/bold]\n")
 
-        # Step 1: Check Python
         self.check_python_version()
 
-        # Step 2: Install dependencies (skip if already installed)
         if not self.check_if_dependencies_installed():
             self.install_dependencies()
 
-        # Step 3: Configure token
         self.configure_token()
 
-        # Step 4: Check for updates
         if Confirm.ask("\n[bold]Check for updates from GitHub?[/bold]"):
             self.check_for_updates()
 
-        # Step 5: System installation
         self.system_installation()
 
-        # Step 6: Display summary
         self.display_summary()
 
 
@@ -546,7 +511,6 @@ def main():
         setup.configure_token()
         return
 
-    # Run full setup
     try:
         setup.run()
     except KeyboardInterrupt:

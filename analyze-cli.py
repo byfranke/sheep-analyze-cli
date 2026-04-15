@@ -35,7 +35,6 @@ try:
 except ImportError:
     ENCRYPTION_AVAILABLE = False
 
-# Constants
 VERSION = "1.1.0"
 DEFAULT_API_URL = "https://sheep.byfranke.com/api/ai/analyze"
 DEFAULT_CONFIG_FILE = "~/.analyze-cli/config.ini"
@@ -44,7 +43,6 @@ GITHUB_REPO = "https://github.com/byfranke/analyze-cli"
 PRIVACY_POLICY = "https://sheep.byfranke.com/pages/privacy.html"
 SUPPORT_EMAIL = "support@byfranke.com"
 
-# Initialize Rich console for beautiful output
 console = Console()
 
 
@@ -59,8 +57,9 @@ class IOCAnalyzer:
             api_token: API authentication token
             api_url: Base URL for the API endpoint
         """
-        self.api_token = api_token or self._load_token()
-        self.api_url = api_url or DEFAULT_API_URL
+        config = self._load_config()
+        self.api_token = self._normalize_token(api_token) or self._load_token(config)
+        self.api_url = api_url or os.environ.get("ANALYZE_API_URL") or self._load_api_url(config)
 
         if not self.api_token:
             raise ValueError(
@@ -108,6 +107,25 @@ class IOCAnalyzer:
         except Exception:
             pass
 
+    def _normalize_token(self, token: Optional[str]) -> Optional[str]:
+        """Normalize token values loaded from CLI, env, config, or keyring."""
+        if token is None:
+            return None
+        token = token.strip()
+        return token or None
+
+    def _load_config(self) -> configparser.ConfigParser:
+        """Load CLI configuration file if present."""
+        config = configparser.ConfigParser()
+        config_path = Path(DEFAULT_CONFIG_FILE).expanduser()
+        if config_path.exists():
+            config.read(config_path)
+        return config
+
+    def _load_api_url(self, config: configparser.ConfigParser) -> str:
+        """Load API URL from config when available."""
+        return config.get("api", "url", fallback=DEFAULT_API_URL).strip() or DEFAULT_API_URL
+
     def _decrypt_token(self, encrypted_token: str, password: str) -> Optional[str]:
         """Decrypt token with password"""
         if not ENCRYPTION_AVAILABLE:
@@ -130,53 +148,43 @@ class IOCAnalyzer:
         except Exception:
             return None
 
-    def _load_token(self) -> Optional[str]:
+    def _load_token(self, config: configparser.ConfigParser) -> Optional[str]:
         """Load API token from various sources"""
-        # 1. Check environment variable first
-        token = os.environ.get("ANALYZE_API_TOKEN")
+        token = self._normalize_token(os.environ.get("ANALYZE_API_TOKEN"))
         if token:
             return token
 
-        # 2. Try system keyring
+        if "api" in config:
+            if config["api"].get("encryption_enabled") == "true" and "encrypted_token" in config["api"]:
+                cached = self._read_session_cache()
+                if cached:
+                    return self._normalize_token(cached)
+
+                encrypted_token = config["api"]["encrypted_token"]
+                console.print("[yellow]Token is encrypted. Enter your master password:[/yellow]")
+
+                for attempt in range(3):
+                    password = getpass("Master Password: ")
+                    token = self._normalize_token(self._decrypt_token(encrypted_token, password))
+                    if token:
+                        self._write_session_cache(token)
+                        return token
+                    console.print(f"[red]Invalid password. {2-attempt} attempts remaining.[/red]")
+
+                console.print("[red]Failed to decrypt token after 3 attempts[/red]")
+                return None
+
+            token = self._normalize_token(config["api"].get("token"))
+            if token:
+                return token
+
         if ENCRYPTION_AVAILABLE:
             try:
-                token = keyring.get_password("analyze-cli", "api_token")
+                token = self._normalize_token(keyring.get_password("analyze-cli", "api_token"))
                 if token:
                     return token
             except Exception:
                 pass
-
-        # 3. Check config file
-        config_path = Path(DEFAULT_CONFIG_FILE).expanduser()
-        if config_path.exists():
-            config = configparser.ConfigParser()
-            config.read(config_path)
-
-            if "api" in config:
-                # Check for encrypted token
-                if config["api"].get("encryption_enabled") == "true" and "encrypted_token" in config["api"]:
-                    # Try per-session cache first so the password is only asked once per terminal session
-                    cached = self._read_session_cache()
-                    if cached:
-                        return cached
-
-                    encrypted_token = config["api"]["encrypted_token"]
-                    console.print("[yellow]Token is encrypted. Enter your master password:[/yellow]")
-
-                    for attempt in range(3):
-                        password = getpass("Master Password: ")
-                        token = self._decrypt_token(encrypted_token, password)
-                        if token:
-                            self._write_session_cache(token)
-                            return token
-                        console.print(f"[red]Invalid password. {2-attempt} attempts remaining.[/red]")
-
-                    console.print("[red]Failed to decrypt token after 3 attempts[/red]")
-                    return None
-
-                # Check for plain token (legacy)
-                if "token" in config["api"]:
-                    return config["api"]["token"]
 
         return None
 
@@ -190,26 +198,18 @@ class IOCAnalyzer:
         Returns:
             The detected IOC type
         """
-        # IP address pattern (IPv4)
         ip_pattern = r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
-
-        # Hash patterns
         md5_pattern = r'^[a-fA-F0-9]{32}$'
         sha1_pattern = r'^[a-fA-F0-9]{40}$'
         sha256_pattern = r'^[a-fA-F0-9]{64}$'
-
-        # CVE pattern
         cve_pattern = r'^CVE-\d{4}-\d{4,}$'
 
-        # Check for URL
         if target.startswith(('http://', 'https://')):
             return 'url'
 
-        # Check for IP
         if re.match(ip_pattern, target):
             return 'ip'
 
-        # Check for hashes
         if re.match(md5_pattern, target):
             return 'hash'
         if re.match(sha1_pattern, target):
@@ -217,18 +217,14 @@ class IOCAnalyzer:
         if re.match(sha256_pattern, target):
             return 'hash'
 
-        # Check for CVE
         if re.match(cve_pattern, target.upper()):
             return 'cve'
 
-        # Check for domain (basic check)
         if '.' in target and not ' ' in target and len(target) < 255:
-            # More sophisticated domain check
             domain_pattern = r'^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$'
             if re.match(domain_pattern, target):
                 return 'domain'
 
-        # Default to domain if unclear
         return 'domain'
 
     def analyze(self, target: str, ioc_type: Optional[str] = None) -> Dict[str, Any]:
@@ -287,7 +283,21 @@ class IOCAnalyzer:
             if response.status_code == 401:
                 console.print("[red]Error: Invalid API token[/red]")
             elif response.status_code == 400:
-                console.print(f"[red]Error: Invalid request - {response.text}[/red]")
+                error_detail = response.text.strip()
+                if not error_detail:
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = {}
+
+                    error_detail = (
+                        str(payload.get("detail") or payload.get("error") or payload.get("message") or "")
+                    ).strip()
+
+                if not error_detail:
+                    error_detail = "the saved token or API URL may be invalid; try --token or re-run setup.py"
+
+                console.print(f"[red]Error: Invalid request - {error_detail}[/red]")
             else:
                 console.print(f"[red]Error: HTTP {response.status_code} - {response.text}[/red]")
             sys.exit(1)
@@ -307,23 +317,19 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
     if output_format == "json":
         console.print_json(json.dumps(results, indent=2))
     elif output_format == "pretty":
-        # Create a beautiful display of the results
         if "error" in results and results["error"] is not None:
             console.print(Panel(f"[red]{results['error']}[/red]", title="Error", border_style="red"))
             return
 
-        # Main result panel
         title = f"IOC Analysis Results"
         if "target" in results:
             title = f"Analysis: {results['target']}"
 
-        # Display analysis result
         if "analysis" in results:
             console.print(Panel(results["analysis"], title=title, border_style="green"))
         elif "summary" in results:
             console.print(Panel(results["summary"], title=title, border_style="green"))
 
-        # Display threat intelligence sources
         if "sources" in results:
             table = Table(title="Threat Intelligence Sources", show_header=True, header_style="bold cyan")
             table.add_column("Source", style="cyan", width=20)
@@ -335,7 +341,6 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
                     status = data.get("status", "Unknown")
                     details = data.get("details", "N/A")
 
-                    # Color code the status
                     if "malicious" in str(status).lower():
                         status = f"[red]{status}[/red]"
                     elif "clean" in str(status).lower():
@@ -347,13 +352,11 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
 
             console.print(table)
 
-        # Display raw data if available
         if "raw_data" in results:
             console.print("\n[bold cyan]Raw Data:[/bold cyan]")
             console.print(JSON(json.dumps(results["raw_data"], indent=2)))
 
     elif output_format == "table":
-        # Simple table format
         table = Table(show_header=True, header_style="bold cyan")
         table.add_column("Field", style="cyan")
         table.add_column("Value")
@@ -513,7 +516,6 @@ Copyright (c) 2026 byFranke - Security Solutions
 
     args = parser.parse_args()
 
-    # Handle about information
     if args.about:
         about_info = f"""
 [bold cyan]Analyze-CLI v{VERSION}[/bold cyan]
@@ -536,7 +538,6 @@ Integrates with multiple threat intelligence sources:
         console.print(Panel(about_info, title="About Analyze-CLI", style="cyan"))
         return
 
-    # Handle session logout
     if args.logout:
         try:
             analyzer = IOCAnalyzer.__new__(IOCAnalyzer)
@@ -550,34 +551,25 @@ Integrates with multiple threat intelligence sources:
             console.print(f"[red]Failed to clear session cache: {e}[/red]")
         return
 
-    # Handle setup wizard
     if args.setup:
         console.print("[cyan]Launching setup wizard...[/cyan]")
         os.system("python3 setup.py")
         return
 
-    # Handle updates
     if args.update:
         check_for_updates()
         return
 
-    # Handle configuration initialization
     if args.init:
         init_config()
         return
 
-    # Require target if not initializing
     if not args.target:
         parser.error("Target IOC is required (use --help for options)")
 
     try:
-        # Initialize analyzer
         analyzer = IOCAnalyzer(api_token=args.token, api_url=args.api_url)
-
-        # Perform analysis
         results = analyzer.analyze(args.target, args.type)
-
-        # Display results
         display_results(results, args.output)
 
     except ValueError as e:
