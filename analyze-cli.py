@@ -36,7 +36,7 @@ except ImportError:
     ENCRYPTION_AVAILABLE = False
 
 # Constants
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 DEFAULT_API_URL = "https://sheep.byfranke.com/api/ai/analyze"
 DEFAULT_CONFIG_FILE = "~/.analyze-cli/config.ini"
 DEFAULT_TIMEOUT = 30

@@ -10,7 +10,7 @@ A robust command-line interface for analyzing Indicators of Compromise (IOCs) in
 
 <p align="center">
   <strong>A robust command-line interface for analyzing Indicators of Compromise</strong><br>
-  Version 1.0 | byFranke 2026
+  Version 1.1.0 | byFranke 2026
 </p>
 
 ---

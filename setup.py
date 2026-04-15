@@ -202,7 +202,7 @@ class AnalyzeSetup:
         """Get current installed version"""
         if VERSION_FILE.exists():
             return VERSION_FILE.read_text().strip()
-        return "1.0.0"
+        return "1.1.0"
 
     def display_welcome(self):
         """Display welcome message with privacy notice"""
