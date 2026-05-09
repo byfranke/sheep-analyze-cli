@@ -1,7 +1,5 @@
 requests>=2.31.0
 rich>=13.7.0
-configparser>=6.0.0
 cryptography>=41.0.0
 keyring>=24.0.0
-getpass4>=0.0.14
 GitPython>=3.1.40

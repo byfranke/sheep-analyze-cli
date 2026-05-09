@@ -10,7 +10,7 @@ A robust command-line interface for analyzing Indicators of Compromise (IOCs) in
 
 <p align="center">
   <strong>A robust command-line interface for analyzing Indicators of Compromise</strong><br>
-  Version 1.1.0 | byFranke 2026
+  Version 1.2 | byFranke 2026
 </p>
 
 ---
@@ -58,10 +58,10 @@ python3 setup.py
 ```
 
 The setup will:
-- Ask for your [API token](https://sheep.byfranke.com/discord)
+- Ask for your [API token](https://sheep.byfranke.com/pages/store)
 - Set a master password for encryption
 - Store your token encrypted in `~/.analyze-cli/config.ini`
-- Require the master password each time you use the CLI
+- Require the master password **only once per terminal session** (cached in `/tmp` with mode `0600`, scoped to your shell's Session ID)
 
 ### Alternative: One-time Use
 
@@ -71,7 +71,16 @@ For single-use or testing, you can pass the token directly:
 ./analyze-cli.py --token "your_api_token_here" 185.220.101.45
 ```
 
-**Security**: Your token is always encrypted and password-protected when stored.
+Or via environment variable:
+
+```bash
+export SHEEP_API_TOKEN="your_api_token_here"
+./analyze-cli.py 185.220.101.45
+```
+
+> The legacy variable `ANALYZE_API_TOKEN` is still accepted but prints a deprecation warning. It will be removed in v1.5. The same `SHEEP_API_TOKEN` works across every Sheep CLI.
+
+**Security**: Your token is always encrypted and password-protected when stored. Encryption uses PBKDF2-SHA256 (600,000 iterations) with a per-install random salt and Fernet (AES-128 + HMAC-SHA256).
 
 ## Usage
 
@@ -107,7 +116,16 @@ For single-use or testing, you can pass the token directly:
 ./analyze-cli.py 8.8.8.8 --output table
 ```
 
-### Advanced Options
+### Session Management
+
+```bash
+# Clear the cached decrypted token for the current terminal only
+./analyze-cli.py --logout
+```
+
+After logout the next call will prompt for the master password again.
+
+### Maintenance
 
 ```bash
 # Show help
@@ -115,6 +133,12 @@ For single-use or testing, you can pass the token directly:
 
 # Show version
 ./analyze-cli.py --version
+
+# Re-run the setup wizard
+./analyze-cli.py --setup
+
+# Check for updates from GitHub
+./analyze-cli.py --update
 ```
 
 ### Common Issues
@@ -123,21 +147,39 @@ For single-use or testing, you can pass the token directly:
    ```
    Error: API token is required
    ```
-   Solution: Configure your API token using one of the methods described above.
+   Solution: Configure your API token using one of the methods described above, or upgrade your plan at https://sheep.byfranke.com/pages/store.
 
-2. **Connection Error**
+2. **Authentication failed (HTTP 401)**
+   ```
+   Invalid API token. Your token is missing, expired, or no longer valid.
+   ```
+   Solution: Re-run `python3 setup.py` with a fresh token, or get/upgrade one at https://sheep.byfranke.com/pages/store.
+
+3. **Plan does not cover this request (HTTP 403)**
+   ```
+   Forbidden — your plan doesn't cover this request.
+   ```
+   Solution: Upgrade your plan at https://sheep.byfranke.com/pages/store.
+
+4. **Too many requests (HTTP 429)**
+   ```
+   Rate limit exceeded.
+   ```
+   Solution: Wait a minute. If it happens often, upgrade your plan at https://sheep.byfranke.com/pages/store.
+
+5. **Connection Error**
    ```
    Error: Failed to connect to API server
    ```
    Solution: Check your internet connection and verify the API URL is correct.
 
-3. **Invalid IOC Type**
+6. **Invalid IOC Type**
    ```
    Error: Invalid request
    ```
    Solution: Ensure the IOC format is correct or let the tool auto-detect the type.
 
-4. **Timeout Error**
+7. **Timeout Error**
    ```
    Error: Request timed out
    ```
@@ -154,11 +196,12 @@ For single-use or testing, you can pass the token directly:
 ## Security Considerations
 
 - **Never commit your API token** to version control
-- Store tokens securely using environment variables or protected config files
-- Use read-only permissions (400) for config files containing tokens:
+- Store tokens securely using the setup wizard (encrypted) or `SHEEP_API_TOKEN`
+- Use restrictive permissions for config files:
   ```bash
-  chmod 400 ~/.analyze-cli/config.ini
+  chmod 600 ~/.analyze-cli/config.ini
   ```
+- Session token cache lives in `/tmp/analyze-cli-sess-<uid>-<sid>` with mode `0600` and is bound to your current shell's Session ID. Run `--logout` to clear it early.
 
   
 ## Donation Support

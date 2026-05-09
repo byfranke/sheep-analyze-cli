@@ -8,10 +8,16 @@ import os
 import sys
 import subprocess
 import platform
+import secrets
 from pathlib import Path
 from getpass import getpass
 import base64
 import configparser
+
+
+PBKDF2_ITERATIONS = 600000
+PBKDF2_SALT_BYTES = 16
+LEGACY_FIXED_SALT = b'analyze-cli-salt-2026'
 
 def check_dependencies():
     """Check if required packages are installed"""
@@ -108,65 +114,79 @@ class SecureTokenManager:
     def __init__(self):
         self.config_dir = CONFIG_DIR
         self.key_file = KEY_FILE
-        self.config_dir.mkdir(exist_ok=True)
+        self.config_dir.mkdir(mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self.config_dir, 0o700)
+        except OSError:
+            pass
 
-    def _get_or_create_key(self, password: str) -> bytes:
-        """Get or create encryption key from password"""
+    def _derive_key(self, password: str, salt: bytes) -> bytes:
+        """Derive a Fernet key from password + salt using PBKDF2-SHA256."""
         if not ENCRYPTION_AVAILABLE:
             raise ImportError("Cryptography library not available")
-
-        salt = b'analyze-cli-salt-2026'  # Static salt for this app
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
             length=32,
             salt=salt,
-            iterations=100000,
+            iterations=PBKDF2_ITERATIONS,
         )
-        key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-        return key
+        return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
-    def encrypt_token(self, token: str, password: str) -> str:
-        """Encrypt token with password"""
+    def encrypt_token(self, token: str, password: str, salt: bytes) -> str:
+        """Encrypt token with the supplied salt."""
         if not ENCRYPTION_AVAILABLE:
             raise ImportError("Cryptography library not available")
-
-        key = self._get_or_create_key(password)
-        f = Fernet(key)
+        f = Fernet(self._derive_key(password, salt))
         encrypted = f.encrypt(token.encode())
         return base64.b64encode(encrypted).decode()
 
-    def decrypt_token(self, encrypted_token: str, password: str) -> str:
-        """Decrypt token with password"""
-        if not ENCRYPTION_AVAILABLE:
-            return None
-
-        try:
-            key = self._get_or_create_key(password)
-            f = Fernet(key)
-            encrypted = base64.b64decode(encrypted_token.encode())
-            decrypted = f.decrypt(encrypted)
-            return decrypted.decode()
-        except Exception:
-            return None
-
     def save_encrypted_token(self, token: str, password: str):
-        """Save encrypted token to config"""
-        encrypted = self.encrypt_token(token, password)
+        """Save encrypted token + per-install salt + KDF iterations.
+
+        The config file is opened with mode 0o600 atomically (O_CREAT
+        carries the mode at creation time) and O_NOFOLLOW (no symlink
+        traversal). This avoids the TOCTOU window between open() and a
+        later os.chmod() where another process could read the cleartext
+        config before the mode was tightened.
+        """
+        salt = secrets.token_bytes(PBKDF2_SALT_BYTES)
+        encrypted = self.encrypt_token(token, password, salt)
 
         config = configparser.ConfigParser()
-        if CONFIG_FILE.exists():
-            config.read(CONFIG_FILE)
+        try:
+            rfd = os.open(str(CONFIG_FILE), os.O_RDONLY | os.O_NOFOLLOW)
+        except (FileNotFoundError, OSError):
+            rfd = None
+        if rfd is not None:
+            try:
+                with os.fdopen(rfd, 'r') as rf:
+                    config.read_file(rf)
+            except (OSError, configparser.Error):
+                config = configparser.ConfigParser()
 
         if 'api' not in config:
             config['api'] = {}
 
         config['api']['encrypted_token'] = encrypted
+        config['api']['salt'] = base64.b64encode(salt).decode()
+        config['api']['kdf_iterations'] = str(PBKDF2_ITERATIONS)
         config['api']['encryption_enabled'] = 'true'
 
-        with open(CONFIG_FILE, 'w') as f:
-            config.write(f)
-
-        os.chmod(CONFIG_FILE, 0o600)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+        fd = os.open(str(CONFIG_FILE), flags, 0o600)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                config.write(f)
+        except Exception:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        try:
+            os.chmod(CONFIG_FILE, 0o600)
+        except OSError:
+            pass
 
     def use_system_keyring(self, token: str):
         """Store token in system keyring"""
@@ -193,13 +213,16 @@ class AnalyzeSetup:
         """Get current installed version"""
         if VERSION_FILE.exists():
             return VERSION_FILE.read_text().strip()
-        return "1.1.0"
+        return "1.2.0"
 
     def display_welcome(self):
         """Display welcome message with privacy notice"""
         console.clear()
 
-        header = "ANALYZE-CLI SETUP WIZARD v1.0\nIOC Analysis & Threat Intelligence"
+        header = (
+            f"ANALYZE-CLI SETUP WIZARD v{self.current_version}\n"
+            "IOC Analysis & Threat Intelligence"
+        )
         console.print(Panel(header, style="bold cyan"))
 
         privacy_notice = f"""
@@ -380,15 +403,12 @@ By continuing, you agree to our terms and privacy policy.
     def check_system_installation(self):
         """Check if analyze-cli is accessible from PATH"""
         console.print("\n[bold cyan]Checking Installation[/bold cyan]")
-        
+
         try:
-            result = subprocess.run(
-                ["which", "analyze-cli"],
-                capture_output=True,
-                text=True
-            )
-            if result.returncode == 0:
-                console.print(f"[green][OK][/green] analyze-cli is available at: {result.stdout.strip()}")
+            import shutil
+            path = shutil.which("analyze-cli")
+            if path:
+                console.print(f"[green][OK][/green] analyze-cli is available at: {path}")
                 return True
             else:
                 console.print("[yellow]analyze-cli not found in PATH[/yellow]")

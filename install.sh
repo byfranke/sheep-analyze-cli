@@ -1,49 +1,60 @@
 #!/bin/bash
+set -eu
 
-set -e
+if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
+    echo "Refusing to run: HOME is empty or '/' (would resolve to system paths)" >&2
+    exit 1
+fi
 
 GITHUB_REPO="https://github.com/byfranke/analyze-cli"
 GITHUB_RAW="https://raw.githubusercontent.com/byfranke/analyze-cli/main"
 INSTALL_DIR="$HOME/.analyze-cli"
 MIN_PYTHON_VERSION="3.7"
 
+DOWNLOADER=""
+if command -v curl >/dev/null 2>&1; then
+    DOWNLOADER="curl"
+elif command -v wget >/dev/null 2>&1; then
+    DOWNLOADER="wget"
+else
+    echo "Either curl or wget is required but neither is installed" >&2
+    exit 1
+fi
+
 download_file() {
     local url="$1"
     local output="$2"
-    
-    if command -v curl >/dev/null 2>&1; then
+
+    if [ "$DOWNLOADER" = "curl" ]; then
         if [ -n "$output" ]; then
             curl -fsSL -o "$output" "$url"
         else
             curl -fsSL "$url"
         fi
-    elif command -v wget >/dev/null 2>&1; then
+    else
         if [ -n "$output" ]; then
             wget -q -O "$output" "$url"
         else
             wget -q -O - "$url"
         fi
-    else
-        echo "Either curl or wget is required" >&2
-        return 1
     fi
 }
 
 case "$(uname -s)" in
     Darwin) OS="macos" ;;
-    Linux) OS="linux" ;;
-    MINGW*|MSYS*|CYGWIN*) 
+    Linux)  OS="linux" ;;
+    MINGW*|MSYS*|CYGWIN*)
         echo "Windows is not fully supported. Use WSL or Git Bash." >&2
         OS="windows"
         ;;
-    *) 
+    *)
         echo "Unsupported operating system: $(uname -s)" >&2
         exit 1
         ;;
 esac
 
 echo "================================="
-echo "  Analyze-CLI Installation"
+echo "  Analyze CLI Installation"
 echo "  OS: $OS | $(uname -m)"
 echo "================================="
 echo ""
@@ -68,17 +79,24 @@ fi
 
 echo "[OK] pip found"
 
-if [ ! -f "requirements.txt" ] || [ ! -f "analyze-cli.py" ]; then
+if [ -f "requirements.txt" ] && [ -f "analyze-cli.py" ]; then
+    WORK_DIR="$(pwd)"
+else
     echo ""
-    echo "Downloading Analyze-CLI..."
-    
+    echo "Downloading Analyze CLI..."
+
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
-    
+    WORK_DIR="$INSTALL_DIR"
+
     if command -v git >/dev/null 2>&1; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             echo "Updating existing installation..."
-            git pull --quiet
+            git fetch --quiet origin
+            DEFAULT_BRANCH=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+            DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+            git reset --hard --quiet "origin/$DEFAULT_BRANCH"
+            git clean -fdq
         else
             rm -rf "$INSTALL_DIR"/* 2>/dev/null || true
             git clone --quiet "$GITHUB_REPO.git" "$INSTALL_DIR"
@@ -89,13 +107,15 @@ if [ ! -f "requirements.txt" ] || [ ! -f "analyze-cli.py" ]; then
         download_file "$GITHUB_RAW/analyze-cli.py" "analyze-cli.py"
         download_file "$GITHUB_RAW/setup.py" "setup.py"
         download_file "$GITHUB_RAW/requirements.txt" "requirements.txt"
+        download_file "$GITHUB_RAW/uninstall.sh" "uninstall.sh" 2>/dev/null || true
+        download_file "$GITHUB_RAW/VERSION" "VERSION" 2>/dev/null || true
         download_file "$GITHUB_RAW/LICENSE" "LICENSE" 2>/dev/null || true
         download_file "$GITHUB_RAW/README.md" "README.md" 2>/dev/null || true
+        [ -f "uninstall.sh" ] && chmod +x uninstall.sh
         echo "[OK] Files downloaded"
     fi
 fi
 
-WORK_DIR="${INSTALL_DIR:-$(pwd)}"
 cd "$WORK_DIR"
 
 echo ""
@@ -104,21 +124,34 @@ echo "Installing dependencies..."
 install_deps() {
     local output
     output=$(pip3 install -r requirements.txt --user 2>&1) || true
-    
+
     if echo "$output" | grep -q "Successfully installed\|already satisfied\|Requirement already"; then
         return 0
     fi
-    
+
     if echo "$output" | grep -q "externally-managed-environment"; then
         echo ""
         echo "System uses externally managed Python (PEP 668)."
         echo "Trying: pip3 install --break-system-packages..."
-        
-        if pip3 install -r requirements.txt --break-system-packages 2>&1; then
+
+        local out2
+        out2=$(pip3 install -r requirements.txt --break-system-packages 2>&1)
+        if [ $? -eq 0 ]; then
             return 0
         fi
+
+        if echo "$out2" | grep -q "RECORD file not found.*installed by debian\|Cannot uninstall.*distutils"; then
+            echo ""
+            echo "Detected debian-managed Python package conflict."
+            echo "Retrying with --ignore-installed (keeps the debian package)..."
+            if pip3 install -r requirements.txt --break-system-packages --ignore-installed 2>&1; then
+                return 0
+            fi
+        fi
+
+        echo "$out2" | tail -5
     fi
-    
+
     return 1
 }
 
@@ -169,22 +202,22 @@ if [ -z "$INSTALLED_PATH" ]; then
     ln -sf "$WORK_DIR/analyze-cli.py" "$HOME/.local/bin/analyze-cli"
     INSTALLED_PATH="$HOME/.local/bin/analyze-cli"
     echo "[OK] Installed to ~/.local/bin/analyze-cli"
-    
+
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         echo ""
         echo "[INFO] Adding ~/.local/bin to PATH..."
-        
+
         SHELL_RC=""
-        if [ -n "$BASH_VERSION" ]; then
+        if [ -n "${BASH_VERSION:-}" ]; then
             SHELL_RC="$HOME/.bashrc"
-        elif [ -n "$ZSH_VERSION" ]; then
+        elif [ -n "${ZSH_VERSION:-}" ]; then
             SHELL_RC="$HOME/.zshrc"
         elif [ -f "$HOME/.bashrc" ]; then
             SHELL_RC="$HOME/.bashrc"
         elif [ -f "$HOME/.zshrc" ]; then
             SHELL_RC="$HOME/.zshrc"
         fi
-        
+
         if [ -n "$SHELL_RC" ]; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
             echo "[OK] Added to $SHELL_RC"
@@ -201,6 +234,7 @@ echo ""
 echo "You can now use: analyze-cli"
 echo ""
 echo "GitHub: $GITHUB_REPO"
+echo "Get an API token: https://sheep.byfranke.com/pages/store"
 
 echo ""
 echo "Starting configuration..."
