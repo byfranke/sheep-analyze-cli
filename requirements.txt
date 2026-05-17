@@ -3,4 +3,3 @@ rich>=13.7.0
 cryptography>=41.0.0
 keyring>=24.0.0
 GitPython>=3.1.40
-stix2>=3.0.2
