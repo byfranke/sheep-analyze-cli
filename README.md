@@ -10,7 +10,7 @@ Command-line client for the Sheep API focused on Indicator of Compromise (IOC) a
 
 <p align="center">
   <strong>IOC analysis from your terminal, powered by the Sheep API.</strong><br>
-  Version 1.3 | byFranke 2026
+  Version 2.2 | byFranke 2026
 </p>
 
 ---
@@ -93,7 +93,7 @@ analyze CVE-2021-44228                  # CVE
 
 ### Which Sheep model is used
 
-Every `/analyze` call is served by the **Sheep Hunter** model. The CLI does not expose a model selector here — analysis is opinionated by design so latency, depth and billing stay consistent across calls. If you need the lighter Scout model or the heavier Sage model, use the `/ask` surface (see [Sheep Ask CLI](https://github.com/byfranke/sheep-ask-cli)) where the model selector is exposed.
+Every `/analyze` call is served by the **Sheep Hunter** model. The CLI does not expose a model selector here. Analysis is opinionated by design so latency, depth and billing stay consistent across calls. If you need the lighter Scout model or the heavier Sage model, use the `/ask` surface (see [Sheep Ask CLI](https://github.com/byfranke/sheep-ask-cli)) where the model selector is exposed.
 
 ### Output formats
 
