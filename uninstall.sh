@@ -12,15 +12,17 @@ YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-INSTALL_DIR="$HOME/.analyze-cli"
-CONFIG_DIR="$HOME/.analyze-cli"
-BACKUP_DIR="$HOME/.analyze-cli-backup-$(date +%Y%m%d-%H%M%S)"
-SYSTEM_BIN="/usr/local/bin/analyze-cli"
-LOCAL_BIN="$HOME/.local/bin/analyze-cli"
+INSTALL_DIRS=("$HOME/.analyze" "$HOME/.analyze-cli")
+CONFIG_DIRS=("$HOME/.analyze" "$HOME/.analyze-cli")
+BACKUP_DIR="$HOME/.sheep-analyze-backup-$(date +%Y%m%d-%H%M%S)"
+SYSTEM_BIN_PRIMARY="/usr/local/bin/analyze"
+SYSTEM_BIN_LEGACY="/usr/local/bin/analyze-cli"
+LOCAL_BIN_PRIMARY="$HOME/.local/bin/analyze"
+LOCAL_BIN_LEGACY="$HOME/.local/bin/analyze-cli"
 CURRENT_DIR="$(dirname "$(readlink -f "$0")")"
 
 echo -e "${CYAN}================================="
-echo "  Analyze CLI Uninstaller"
+echo "  Sheep Analyze CLI Uninstaller"
 echo "=================================${NC}"
 echo ""
 
@@ -43,106 +45,125 @@ ask_yes_no() {
 check_installation() {
     local installed=false
 
-    if [ -d "$INSTALL_DIR" ]; then
-        print_info "Found installation directory: $INSTALL_DIR"
-        installed=true
-    fi
+    for dir in "${INSTALL_DIRS[@]}"; do
+        if [ -d "$dir" ]; then
+            print_info "Found installation directory: $dir"
+            installed=true
+        fi
+    done
 
-    if [ -f "$SYSTEM_BIN" ]; then
-        print_info "Found system-wide installation: $SYSTEM_BIN"
-        installed=true
-    fi
-
-    if [ -f "$LOCAL_BIN" ] || [ -L "$LOCAL_BIN" ]; then
-        print_info "Found local bin installation: $LOCAL_BIN"
-        installed=true
-    fi
+    for bin in "$SYSTEM_BIN_PRIMARY" "$SYSTEM_BIN_LEGACY" "$LOCAL_BIN_PRIMARY" "$LOCAL_BIN_LEGACY"; do
+        if [ -f "$bin" ] || [ -L "$bin" ]; then
+            print_info "Found binary: $bin"
+            installed=true
+        fi
+    done
 
     if [ "$installed" = false ]; then
-        print_warning "Analyze CLI installation not found"
+        print_warning "Sheep Analyze CLI installation not found"
         echo "Nothing to uninstall."
         exit 0
     fi
 }
 
 backup_config() {
-    if [ -d "$CONFIG_DIR" ]; then
-        echo ""
-        if ask_yes_no "Do you want to backup your configuration files before uninstalling?"; then
-            print_info "Creating backup at: $BACKUP_DIR"
-            mkdir -p "$BACKUP_DIR"
-            chmod 700 "$BACKUP_DIR"
+    local found=false
+    for cfg_dir in "${CONFIG_DIRS[@]}"; do
+        if [ -d "$cfg_dir" ] && [ -f "$cfg_dir/config.ini" ]; then
+            found=true
+            break
+        fi
+    done
+    [ "$found" = false ] && return
 
-            if [ -f "$CONFIG_DIR/config.ini" ]; then
-                cp "$CONFIG_DIR/config.ini" "$BACKUP_DIR/" 2>/dev/null || true
-                chmod 600 "$BACKUP_DIR/config.ini" 2>/dev/null || true
-                print_success "Backed up config.ini"
-            fi
+    echo ""
+    if ! ask_yes_no "Do you want to backup your configuration files before uninstalling?"; then
+        return
+    fi
 
-            cat > "$BACKUP_DIR/restore.sh" << 'EOF'
+    print_info "Creating backup at: $BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR"
+    chmod 700 "$BACKUP_DIR"
+
+    for cfg_dir in "${CONFIG_DIRS[@]}"; do
+        if [ -f "$cfg_dir/config.ini" ]; then
+            local label
+            label="$(basename "$cfg_dir")"
+            cp "$cfg_dir/config.ini" "$BACKUP_DIR/${label}.config.ini" 2>/dev/null || true
+            chmod 600 "$BACKUP_DIR/${label}.config.ini" 2>/dev/null || true
+            print_success "Backed up $cfg_dir/config.ini"
+        fi
+    done
+
+    cat > "$BACKUP_DIR/restore.sh" << 'EOF'
 #!/bin/bash
 BACKUP_DIR="$(dirname "$(readlink -f "$0")")"
-CONFIG_DIR="$HOME/.analyze-cli"
-
-echo "Restoring Analyze CLI configuration..."
-mkdir -p "$CONFIG_DIR"
-if [ -f "$BACKUP_DIR/config.ini" ]; then
-    cp "$BACKUP_DIR/config.ini" "$CONFIG_DIR/"
-    chmod 600 "$CONFIG_DIR/config.ini"
-    echo "[OK] Restored config.ini"
+TARGET_DIR="$HOME/.analyze"
+mkdir -p "$TARGET_DIR"
+SRC=""
+[ -f "$BACKUP_DIR/.analyze.config.ini" ] && SRC="$BACKUP_DIR/.analyze.config.ini"
+[ -z "$SRC" ] && [ -f "$BACKUP_DIR/.analyze-cli.config.ini" ] && SRC="$BACKUP_DIR/.analyze-cli.config.ini"
+if [ -n "$SRC" ]; then
+    cp "$SRC" "$TARGET_DIR/config.ini"
+    chmod 600 "$TARGET_DIR/config.ini"
+    echo "[OK] Restored config.ini to $TARGET_DIR"
+else
+    echo "[ERROR] No backup found in $BACKUP_DIR"
+    exit 1
 fi
-echo "Configuration restored successfully!"
 EOF
-            chmod 700 "$BACKUP_DIR/restore.sh"
-            print_success "Backup completed (mode 0700 — owner only)"
-            print_info "To restore configuration later, run: $BACKUP_DIR/restore.sh"
-        fi
-    fi
+    chmod 700 "$BACKUP_DIR/restore.sh"
+    print_success "Backup completed (mode 0700 — owner only)"
+    print_info "To restore configuration later, run: $BACKUP_DIR/restore.sh"
 }
 
 remove_symlinks() {
     local removed=false
 
-    if [ -f "$SYSTEM_BIN" ] || [ -L "$SYSTEM_BIN" ]; then
-        echo ""
-        if ask_yes_no "Remove system-wide symlink from /usr/local/bin?"; then
-            if sudo rm -f "$SYSTEM_BIN"; then
-                print_success "Removed $SYSTEM_BIN"
-                removed=true
-            else
-                print_error "Failed to remove $SYSTEM_BIN (may require sudo)"
+    for bin in "$SYSTEM_BIN_PRIMARY" "$SYSTEM_BIN_LEGACY"; do
+        if [ -f "$bin" ] || [ -L "$bin" ]; then
+            echo ""
+            if ask_yes_no "Remove system-wide binary $bin?"; then
+                if sudo rm -f "$bin"; then
+                    print_success "Removed $bin"
+                    removed=true
+                else
+                    print_error "Failed to remove $bin (may require sudo)"
+                fi
             fi
         fi
-    fi
+    done
 
-    if [ -f "$LOCAL_BIN" ] || [ -L "$LOCAL_BIN" ]; then
-        echo ""
-        if ask_yes_no "Remove symlink from ~/.local/bin?"; then
-            if rm -f "$LOCAL_BIN"; then
-                print_success "Removed $LOCAL_BIN"
-                removed=true
-            else
-                print_error "Failed to remove $LOCAL_BIN"
+    for bin in "$LOCAL_BIN_PRIMARY" "$LOCAL_BIN_LEGACY"; do
+        if [ -f "$bin" ] || [ -L "$bin" ]; then
+            echo ""
+            if ask_yes_no "Remove user binary $bin?"; then
+                if rm -f "$bin"; then
+                    print_success "Removed $bin"
+                    removed=true
+                else
+                    print_error "Failed to remove $bin"
+                fi
             fi
         fi
-    fi
+    done
 
-    if [ "$removed" = false ]; then
-        print_info "No symlinks to remove"
-    fi
+    [ "$removed" = false ] && print_info "No symlinks to remove"
 }
 
 remove_config_dir() {
-    if [ -d "$CONFIG_DIR" ]; then
-        echo ""
-        if ask_yes_no "Remove configuration directory (~/.analyze-cli)?"; then
-            if rm -rf "$CONFIG_DIR"; then
-                print_success "Removed configuration directory"
-            else
-                print_error "Failed to remove configuration directory"
+    for cfg_dir in "${CONFIG_DIRS[@]}"; do
+        if [ -d "$cfg_dir" ]; then
+            echo ""
+            if ask_yes_no "Remove configuration directory $cfg_dir?"; then
+                if rm -rf "$cfg_dir"; then
+                    print_success "Removed $cfg_dir"
+                else
+                    print_error "Failed to remove $cfg_dir"
+                fi
             fi
         fi
-    fi
+    done
 }
 
 clear_session_cache() {
@@ -157,7 +178,7 @@ clear_session_cache() {
 
 remove_dependencies() {
     echo ""
-    print_warning "The following Python packages were installed by Analyze CLI:"
+    print_warning "The following Python packages were installed by Sheep Analyze CLI:"
     echo "  - requests"
     echo "  - rich"
     echo "  - cryptography"
@@ -184,7 +205,7 @@ remove_dependencies() {
 
 remove_local_files() {
     echo ""
-    print_warning "This will remove Analyze CLI files from the current directory:"
+    print_warning "This will remove Sheep Analyze CLI files from the current directory:"
     echo "  $CURRENT_DIR"
     echo ""
     echo "Files to be removed:"
@@ -198,7 +219,7 @@ remove_local_files() {
     [ -f "$CURRENT_DIR/.gitignore" ] && echo "  - .gitignore"
     echo ""
 
-    if ask_yes_no "Remove all Analyze CLI files from current directory?"; then
+    if ask_yes_no "Remove all Sheep Analyze CLI files from current directory?"; then
         rm -f "$CURRENT_DIR/analyze-cli.py" 2>/dev/null || true
         rm -f "$CURRENT_DIR/setup.py" 2>/dev/null || true
         rm -f "$CURRENT_DIR/install.sh" 2>/dev/null || true
@@ -238,7 +259,7 @@ main() {
     check_installation
 
     echo ""
-    echo -e "${YELLOW}This will uninstall Analyze CLI from your system.${NC}"
+    echo -e "${YELLOW}This will uninstall Sheep Analyze CLI from your system.${NC}"
     echo "You will be asked to confirm each step."
     echo ""
 
@@ -270,13 +291,13 @@ main() {
     fi
 
     echo ""
-    print_success "Analyze CLI has been uninstalled"
+    print_success "Sheep Analyze CLI has been uninstalled"
     echo ""
-    echo "Thank you for using Analyze CLI!"
+    echo "Thank you for using Sheep Analyze CLI!"
     echo "For feedback or support: support@byfranke.com"
     echo ""
     echo "Want to come back? Reinstall any time:"
-    echo "  curl -fsSL https://byfranke.com/analyze-cli-install | bash"
+    echo "  curl -fsSL https://raw.githubusercontent.com/byfranke/sheep-analyze-cli/main/install.sh | bash"
     echo "Get an API token: https://sheep.byfranke.com/pages/store"
 }
 
