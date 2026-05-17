@@ -1385,10 +1385,6 @@ Integrates with multiple threat intelligence sources:
 
     try:
         analyzer = IOCAnalyzer(api_token=args.token, api_url=args.api_url)
-        # Map the CLI's user-facing --output choice to the wire format
-        # the server should produce. stix → server emits a STIX 2.1
-        # Bundle directly; json → server omits the markdown narrative;
-        # pretty/table → CLI needs the full payload to render locally.
         wire_format = "stix" if args.output == "stix" else "markdown"
         results = analyzer.analyze(args.target, args.type, api_format=wire_format)
         display_results(results, args.output)
