@@ -31,7 +31,7 @@ Command-line client for the Sheep API focused on Indicator of Compromise (IOC) a
 ### Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/byfranke/sheep-analyze-cli/main/install.sh | bash
+curl -fsSL https://byfranke.com/analyze-cli-install | bash
 ```
 
 ### Install from source
