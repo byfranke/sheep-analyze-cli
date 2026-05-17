@@ -6,10 +6,19 @@ if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
     exit 1
 fi
 
-GITHUB_REPO="https://github.com/byfranke/analyze-cli"
-GITHUB_RAW="https://raw.githubusercontent.com/byfranke/analyze-cli/main"
-INSTALL_DIR="$HOME/.analyze-cli"
+GITHUB_REPO="https://github.com/byfranke/sheep-analyze-cli"
+GITHUB_RAW="https://raw.githubusercontent.com/byfranke/sheep-analyze-cli/main"
+INSTALL_DIR="$HOME/.analyze"
+LEGACY_INSTALL_DIR="$HOME/.analyze-cli"
+BIN_NAME="analyze"
+LEGACY_BIN_NAME="analyze-cli"
 MIN_PYTHON_VERSION="3.7"
+
+if [ ! -d "$INSTALL_DIR" ] && [ -d "$LEGACY_INSTALL_DIR" ]; then
+    INSTALL_DIR="$LEGACY_INSTALL_DIR"
+    echo "[INFO] Reusing legacy install dir at $LEGACY_INSTALL_DIR."
+    echo "       Run setup.py later to migrate to $HOME/.analyze."
+fi
 
 DOWNLOADER=""
 if command -v curl >/dev/null 2>&1; then
@@ -54,7 +63,7 @@ case "$(uname -s)" in
 esac
 
 echo "================================="
-echo "  Analyze CLI Installation"
+echo "  Sheep Analyze CLI Installation"
 echo "  OS: $OS | $(uname -m)"
 echo "================================="
 echo ""
@@ -83,7 +92,7 @@ if [ -f "requirements.txt" ] && [ -f "analyze-cli.py" ]; then
     WORK_DIR="$(pwd)"
 else
     echo ""
-    echo "Downloading Analyze CLI..."
+    echo "Downloading Sheep Analyze CLI..."
 
     mkdir -p "$INSTALL_DIR"
     cd "$INSTALL_DIR"
@@ -184,24 +193,35 @@ chmod +x analyze-cli.py setup.py
 echo ""
 echo "Setting up command-line access..."
 
+INSTALLED_DIR=""
 INSTALLED_PATH=""
 
+install_symlink_at() {
+    local target_dir="$1"
+    local primary="$target_dir/$BIN_NAME"
+    local legacy="$target_dir/$LEGACY_BIN_NAME"
+    if ln -sf "$WORK_DIR/analyze-cli.py" "$primary" 2>/dev/null; then
+        ln -sf "$WORK_DIR/analyze-cli.py" "$legacy" 2>/dev/null || true
+        INSTALLED_DIR="$target_dir"
+        INSTALLED_PATH="$primary"
+        return 0
+    fi
+    return 1
+}
+
 if [ -w /usr/local/bin ]; then
-    ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli
-    INSTALLED_PATH="/usr/local/bin/analyze-cli"
-    echo "[OK] Installed to /usr/local/bin/analyze-cli"
+    install_symlink_at /usr/local/bin && true
 elif command -v sudo >/dev/null 2>&1; then
-    if sudo ln -sf "$WORK_DIR/analyze-cli.py" /usr/local/bin/analyze-cli 2>/dev/null; then
-        INSTALLED_PATH="/usr/local/bin/analyze-cli"
-        echo "[OK] Installed to /usr/local/bin/analyze-cli"
+    if sudo ln -sf "$WORK_DIR/analyze-cli.py" "/usr/local/bin/$BIN_NAME" 2>/dev/null; then
+        sudo ln -sf "$WORK_DIR/analyze-cli.py" "/usr/local/bin/$LEGACY_BIN_NAME" 2>/dev/null || true
+        INSTALLED_DIR="/usr/local/bin"
+        INSTALLED_PATH="/usr/local/bin/$BIN_NAME"
     fi
 fi
 
 if [ -z "$INSTALLED_PATH" ]; then
     mkdir -p "$HOME/.local/bin"
-    ln -sf "$WORK_DIR/analyze-cli.py" "$HOME/.local/bin/analyze-cli"
-    INSTALLED_PATH="$HOME/.local/bin/analyze-cli"
-    echo "[OK] Installed to ~/.local/bin/analyze-cli"
+    install_symlink_at "$HOME/.local/bin" && true
 
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         echo ""
@@ -221,9 +241,14 @@ if [ -z "$INSTALLED_PATH" ]; then
         if [ -n "$SHELL_RC" ]; then
             echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$SHELL_RC"
             echo "[OK] Added to $SHELL_RC"
-            echo "[INFO] Run 'source $SHELL_RC' or restart terminal to use 'analyze-cli'"
+            echo "[INFO] Run 'source $SHELL_RC' or restart terminal to use '$BIN_NAME'"
         fi
     fi
+fi
+
+if [ -n "$INSTALLED_PATH" ]; then
+    echo "[OK] Installed: $INSTALLED_PATH"
+    echo "[OK] Legacy alias: $INSTALLED_DIR/$LEGACY_BIN_NAME (kept for backwards compatibility)"
 fi
 
 echo ""
@@ -231,7 +256,8 @@ echo "================================="
 echo "  Installation Complete!"
 echo "================================="
 echo ""
-echo "You can now use: analyze-cli"
+echo "You can now use: $BIN_NAME"
+echo "Legacy alias still works: $LEGACY_BIN_NAME"
 echo ""
 echo "GitHub: $GITHUB_REPO"
 echo "Get an API token: https://sheep.byfranke.com/pages/store"
