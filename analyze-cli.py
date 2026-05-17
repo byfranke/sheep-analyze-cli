@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Analyze-CLI: IOC Analysis Tool
-Copyright (c) 2026 byFranke - Security Solutions
-GitHub: https://github.com/byfranke/analyze-cli
+Sheep Analyze CLI: IOC analysis tool for the Sheep platform.
 
-A robust command-line interface for analyzing Indicators of Compromise (IOCs)
-including IPs, domains, hashes, URLs, and CVEs using multiple threat intelligence sources.
+Copyright (c) 2026 byFranke - Security Solutions
+GitHub: https://github.com/byfranke/sheep-analyze-cli
+
+A command-line interface for analyzing Indicators of Compromise (IPs,
+domains, hashes, URLs, CVEs) through the Sheep API, with built-in
+threat intelligence enrichment and structured (SOAR-friendly) output.
 """
 
 import argparse
@@ -39,15 +41,22 @@ try:
 except ImportError:
     ENCRYPTION_AVAILABLE = False
 
+try:
+    import stix2
+    STIX2_AVAILABLE = True
+except ImportError:
+    STIX2_AVAILABLE = False
+
 _VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
-VERSION = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else "1.2.0"
+VERSION = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else "2.0.0"
 DEFAULT_API_BASE = "https://sheep.byfranke.com"
 ANALYZE_PATH = "/api/ai/analyze"
 PROFILE_PATH = "/api/profile"
 DEFAULT_API_URL = DEFAULT_API_BASE + ANALYZE_PATH
-DEFAULT_CONFIG_FILE = "~/.analyze-cli/config.ini"
+DEFAULT_CONFIG_FILE = "~/.analyze/config.ini"
+LEGACY_CONFIG_FILE = "~/.analyze-cli/config.ini"
 DEFAULT_TIMEOUT = 30
-GITHUB_REPO = "https://github.com/byfranke/analyze-cli"
+GITHUB_REPO = "https://github.com/byfranke/sheep-analyze-cli"
 PRIVACY_POLICY = "https://sheep.byfranke.com/pages/privacy.html"
 SUPPORT_EMAIL = "support@byfranke.com"
 STORE_URL = "https://sheep.byfranke.com/pages/store"
@@ -71,6 +80,8 @@ def _normalize_api_base(value: Optional[str]) -> str:
 PBKDF2_DEFAULT_ITERATIONS = 600000
 LEGACY_FIXED_SALT = b'analyze-cli-salt-2026'
 LEGACY_ITERATIONS = 100000
+KEYRING_SERVICE = "sheep-analyze"
+LEGACY_KEYRING_SERVICE = "analyze-cli"
 MIN_PBKDF2_ITERATIONS = 100000
 MAX_PBKDF2_ITERATIONS = 10000000
 MIN_SALT_BYTES = 16
@@ -109,6 +120,12 @@ class IOCAnalyzer:
         self.api_url = self.api_base + ANALYZE_PATH
         self.profile_url = self.api_base + PROFILE_PATH
         self._validate_api_url(self.api_base)
+        if self.api_base != DEFAULT_API_BASE:
+            err_console.print(
+                f"[yellow]Warning: using non-default API base "
+                f"({self.api_base}). Your X-Sheep-Token will be sent to "
+                f"that host. Make sure you trust it.[/yellow]"
+            )
 
         if not self.api_token:
             raise ValueError(
@@ -247,16 +264,30 @@ class IOCAnalyzer:
     def _load_config(self) -> configparser.ConfigParser:
         """Load CLI configuration file if present.
 
+        Looks at ``~/.analyze/config.ini`` first; falls back to the
+        legacy ``~/.analyze-cli/config.ini`` (with a deprecation warning)
+        so users upgrading from v1.2 keep working without rerunning the
+        setup wizard. Both paths apply the same permission gate.
+
         Refuses to load configs that are world/group-readable: an attacker
-        with read access to a 0644 config holding the encrypted token,
-        salt, and KDF iterations could mount an offline brute-force
-        attack against the master password. Fail-closed (warn + ignore)
-        so the caller is forced to fix permissions before the token
-        leaves the local trust boundary again.
+        with read access to a config holding the encrypted token, salt
+        and KDF iterations could mount an offline brute-force attack
+        against the master password. Fail-closed (warn + ignore) so the
+        caller is forced to fix permissions before the token leaves the
+        local trust boundary again.
         """
         config = configparser.ConfigParser()
-        config_path = Path(DEFAULT_CONFIG_FILE).expanduser()
-        if not config_path.exists():
+        primary = Path(DEFAULT_CONFIG_FILE).expanduser()
+        legacy = Path(LEGACY_CONFIG_FILE).expanduser()
+        if primary.exists():
+            config_path = primary
+        elif legacy.exists():
+            config_path = legacy
+            err_console.print(
+                f"[yellow]Warning: reading legacy config at {legacy}. "
+                f"Re-run `python3 setup.py` to migrate to {primary}.[/yellow]"
+            )
+        else:
             return config
         try:
             st = config_path.stat()
@@ -372,12 +403,15 @@ class IOCAnalyzer:
                 return token
 
         if ENCRYPTION_AVAILABLE:
-            try:
-                token = self._normalize_token(keyring.get_password("analyze-cli", "api_token"))
-                if token:
-                    return token
-            except Exception:
-                pass
+            for service in (KEYRING_SERVICE, LEGACY_KEYRING_SERVICE):
+                try:
+                    token = self._normalize_token(
+                        keyring.get_password(service, "api_token")
+                    )
+                    if token:
+                        return token
+                except Exception:
+                    continue
 
         return None
 
@@ -420,16 +454,22 @@ class IOCAnalyzer:
 
         return 'domain'
 
-    def analyze(self, target: str, ioc_type: Optional[str] = None) -> Dict[str, Any]:
+    def analyze(
+        self,
+        target: str,
+        ioc_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Analyze an IOC using the API.
 
         Args:
-            target: The IOC to analyze
-            ioc_type: Type of IOC (auto-detected if not provided)
+            target: The IOC to analyze.
+            ioc_type: Type of IOC (auto-detected if not provided).
 
         Returns:
-            Analysis results from the API
+            Analysis results from the API. The /analyze endpoint runs
+            every request on the Hunter model — there is no per-call
+            model selector.
         """
         if not ioc_type:
             ioc_type = self.detect_ioc_type(target)
@@ -438,12 +478,12 @@ class IOCAnalyzer:
         headers = {
             "X-Sheep-Token": self.api_token,
             "Content-Type": "application/json",
-            "User-Agent": f"analyze-cli/{VERSION}",
+            "User-Agent": f"sheep-analyze/{VERSION}",
         }
 
-        payload = {
+        payload: Dict[str, Any] = {
             "target": target,
-            "type": ioc_type
+            "type": ioc_type,
         }
 
         try:
@@ -488,7 +528,8 @@ class IOCAnalyzer:
                 ))
             elif response.status_code == 403:
                 err_console.print(Panel(
-                    "[red]Forbidden — your plan doesn't cover this request.[/red]\n\n"
+                    "[red]Forbidden — your plan doesn't cover this "
+                    "request.[/red]\n\n"
                     f"Upgrade your plan: [blue]{STORE_URL}[/blue]\n"
                     f"Support: {SUPPORT_EMAIL}",
                     title="Plan does not cover this request",
@@ -536,7 +577,7 @@ class IOCAnalyzer:
 
     def profile(self) -> Dict[str, Any]:
         """Fetch the authenticated caller's plan + quota from /api/profile."""
-        headers = {"X-Sheep-Token": self.api_token, "User-Agent": f"analyze-cli/{VERSION}"}
+        headers = {"X-Sheep-Token": self.api_token, "User-Agent": f"sheep-analyze/{VERSION}"}
         try:
             response = requests.get(self.profile_url, headers=headers, timeout=DEFAULT_TIMEOUT)
         except requests.exceptions.Timeout:
@@ -655,6 +696,38 @@ def _confidence_bar(confidence: int) -> str:
     return f"[{color}]{bar}[/{color}] {confidence}%"
 
 
+_VALID_ENGINE_NAMES = {"scout", "hunter", "sage"}
+
+
+def _format_engine_line(results: Dict[str, Any]) -> str:
+    """Render the "Engine: Sheep Hunter" sub-header.
+
+    Two surfaces:
+    - ``served_by`` (the engine that actually ran) → "Engine: Sheep Hunter".
+    - ``requested_model`` (only present when the server downgraded from
+      the asked tier) → appended downgrade notice in yellow.
+
+    Returns an empty string when the response carries no engine info
+    (older server / cached path) so the header stays clean.
+    """
+    served_by_raw = (results.get("served_by") or "").strip().lower()
+    if served_by_raw not in _VALID_ENGINE_NAMES:
+        return ""
+    label = served_by_raw.capitalize()
+    line = f"[bold]Engine:[/bold] Sheep {label}"
+    requested_raw = (results.get("requested_model") or "").strip().lower()
+    if (
+        requested_raw
+        and requested_raw in _VALID_ENGINE_NAMES
+        and requested_raw != served_by_raw
+    ):
+        line += (
+            f"  [yellow](requested {requested_raw.capitalize()}, "
+            f"downgraded to {label})[/yellow]"
+        )
+    return line
+
+
 def _render_structured(results: Dict[str, Any], structured: Dict[str, Any]) -> None:
     target = _safe(results.get("target", ""), max_len=200)
     ioc_type = _safe(results.get("type", ""), max_len=40)
@@ -666,6 +739,9 @@ def _render_structured(results: Dict[str, Any], structured: Dict[str, Any]) -> N
         f"[bold {verdict_color}]Verdict:[/bold {verdict_color}] [{verdict_color}]{verdict_label}[/{verdict_color}]",
         f"[bold]Confidence:[/bold] {_confidence_bar(confidence)}",
     ]
+    served_line = _format_engine_line(results)
+    if served_line:
+        header_lines.append(served_line)
     summary = _safe((structured.get("summary") or "").strip(), max_len=600)
     if summary:
         header_lines.append("")
@@ -864,16 +940,308 @@ def _summarize_source(name: str, data: Dict[str, Any]) -> str:
     return ", ".join(items)
 
 
+_STIX_PRODUCER_NAME = "Sheep AI"
+_STIX_PRODUCER_DESC = (
+    "Sheep API analysis result exported as STIX 2.1 by sheep-analyze-cli."
+)
+_STIX_VERDICT_LABELS = {
+    "malicious": ["malicious-activity"],
+    "suspicious": ["anomalous-activity"],
+    "benign": ["benign"],
+    "inconclusive": ["unknown"],
+}
+_STIX_HASH_LEN_TO_TYPE = {32: "MD5", 40: "SHA-1", 64: "SHA-256"}
+_STIX_HEX_RE = re.compile(r"^[A-Fa-f0-9]+$")
+_STIX_CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE)
+_STIX_FORBIDDEN_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _stix_pattern_for(ioc_type: str, value: str) -> Optional[str]:
+    """Return a STIX 2.1 pattern for a single observable.
+
+    Supported types:
+      - ``ip``      → ``[ipv4-addr:value = '…']`` (IPv6 routed automatically)
+      - ``domain``  → ``[domain-name:value = '…']``
+      - ``url``     → ``[url:value = '…']``
+      - ``hash`` /
+        ``hash_md5`` / ``hash_sha1`` / ``hash_sha256`` →
+        ``[file:hashes.'<ALGO>' = '…']``
+      - ``cve``     → handled as a Vulnerability SDO, not an Indicator
+        pattern. Returns ``None`` so the caller renders the right SDO.
+
+    Returns ``None`` for unsupported types or invalid values. Single
+    quotes inside the value are doubled per STIX 2.1 pattern grammar.
+    Values containing control characters (CR/LF, NUL, escape codes) are
+    rejected — a clean IOC never has them, and a STIX consumer
+    rendering the bundle in HTML / a terminal should not have to defend
+    against smuggled newlines.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    if _STIX_FORBIDDEN_CHARS_RE.search(value):
+        return None
+    safe = value.strip().replace("'", "''")
+    if not safe:
+        return None
+    t = (ioc_type or "").strip().lower()
+    if t in ("ip", "ipv4", "ipv6", "ip_addr"):
+        if ":" in safe:
+            return f"[ipv6-addr:value = '{safe}']"
+        return f"[ipv4-addr:value = '{safe}']"
+    if t == "domain":
+        return f"[domain-name:value = '{safe}']"
+    if t == "url":
+        return f"[url:value = '{safe}']"
+    if t in ("hash", "hash_md5", "hash_sha1", "hash_sha256"):
+        algo = None
+        if t == "hash_md5":
+            algo = "MD5"
+        elif t == "hash_sha1":
+            algo = "SHA-1"
+        elif t == "hash_sha256":
+            algo = "SHA-256"
+        else:
+            if _STIX_HEX_RE.match(safe):
+                algo = _STIX_HASH_LEN_TO_TYPE.get(len(safe))
+        if not algo:
+            return None
+        return f"[file:hashes.'{algo}' = '{safe}']"
+    return None
+
+
+def _to_stix_bundle(results: Dict[str, Any]) -> "stix2.Bundle":
+    """Convert a Sheep ``AnalysisResult`` payload into a STIX 2.1 Bundle.
+
+    Mapping:
+      - ``Identity`` SDO names the producer ("Sheep AI").
+      - The primary target becomes an ``Indicator`` SDO (when an IOC
+        pattern fits) OR a ``Vulnerability`` SDO (for CVEs).
+      - ``structured_analysis.iocs_extracted`` adds one Indicator per
+        secondary IOC, related to the primary indicator via
+        ``Relationship`` SDOs (``related-to``).
+      - ``structured_analysis.mitre_techniques`` add ``AttackPattern``
+        SDOs with ``external_references`` pointing at the MITRE ATT&CK
+        registry. Each is related to the primary indicator.
+      - ``structured_analysis.recommendations`` (when present) become
+        a single ``Note`` SDO listing each recommendation as a bullet.
+      - ``structured_analysis.verdict`` maps to indicator ``labels``
+        using the standard STIX ``indicator-type-ov`` vocabulary.
+      - ``structured_analysis.confidence`` is propagated when set.
+
+    The function NEVER raises on a malformed input — it produces the
+    best-effort bundle and skips fields that don't fit STIX 2.1. The
+    only required object in the bundle is the Identity SDO + one
+    primary indicator/vulnerability.
+    """
+    if not STIX2_AVAILABLE:
+        raise RuntimeError(
+            "stix2 is not installed. Install with: pip install stix2"
+        )
+
+    target = (results.get("target") or "").strip()
+    ioc_type = (results.get("type") or "").strip().lower()
+    structured = results.get("structured_analysis") or {}
+    verdict = (structured.get("verdict") or "").strip().lower()
+    confidence_raw = structured.get("confidence")
+    summary = (structured.get("summary") or "").strip()
+
+    objects: List[Any] = []
+
+    producer = stix2.Identity(
+        name=_STIX_PRODUCER_NAME,
+        identity_class="organization",
+        description=_STIX_PRODUCER_DESC,
+    )
+    objects.append(producer)
+
+    labels = _STIX_VERDICT_LABELS.get(verdict)
+
+    def _confidence_kwargs() -> Dict[str, Any]:
+        try:
+            c = int(confidence_raw)
+            if 0 <= c <= 100:
+                return {"confidence": c}
+        except (TypeError, ValueError):
+            pass
+        return {}
+
+    primary_id: Optional[str] = None
+
+    if ioc_type == "cve" or _STIX_CVE_RE.match(target):
+        vuln_kwargs: Dict[str, Any] = {
+            "name": target,
+            "description": summary or f"Vulnerability {target}",
+            "created_by_ref": producer.id,
+            "external_references": [{
+                "source_name": "cve",
+                "external_id": target,
+                "url": f"https://nvd.nist.gov/vuln/detail/{target}",
+            }],
+        }
+        vuln_kwargs.update(_confidence_kwargs())
+        vuln = stix2.Vulnerability(**vuln_kwargs)
+        objects.append(vuln)
+        primary_id = vuln.id
+    else:
+        pattern = _stix_pattern_for(ioc_type, target)
+        if pattern:
+            ind_kwargs: Dict[str, Any] = {
+                "name": target,
+                "description": summary or f"Sheep AI analysis of {target}",
+                "pattern_type": "stix",
+                "pattern": pattern,
+                "valid_from": stix2.utils.format_datetime(
+                    stix2.utils.STIXdatetime.now()
+                ),
+                "created_by_ref": producer.id,
+            }
+            if labels:
+                ind_kwargs["labels"] = labels
+            ind_kwargs.update(_confidence_kwargs())
+            primary = stix2.Indicator(**ind_kwargs)
+            objects.append(primary)
+            primary_id = primary.id
+
+    iocs = structured.get("iocs_extracted") or []
+    secondary_indicator_ids: List[str] = []
+    for item in iocs[:25]:
+        if not isinstance(item, dict):
+            continue
+        sec_type = (item.get("type") or "").strip().lower()
+        sec_value = (item.get("value") or "").strip()
+        if not sec_type or not sec_value:
+            continue
+        if sec_type == "cve" or _STIX_CVE_RE.match(sec_value):
+            vuln = stix2.Vulnerability(
+                name=sec_value,
+                created_by_ref=producer.id,
+                external_references=[{
+                    "source_name": "cve",
+                    "external_id": sec_value,
+                    "url": f"https://nvd.nist.gov/vuln/detail/{sec_value}",
+                }],
+            )
+            objects.append(vuln)
+            if primary_id:
+                objects.append(stix2.Relationship(
+                    source_ref=primary_id,
+                    target_ref=vuln.id,
+                    relationship_type="related-to",
+                    created_by_ref=producer.id,
+                ))
+            continue
+        pattern = _stix_pattern_for(sec_type, sec_value)
+        if not pattern:
+            continue
+        sec_kwargs: Dict[str, Any] = {
+            "name": sec_value,
+            "pattern_type": "stix",
+            "pattern": pattern,
+            "valid_from": stix2.utils.format_datetime(
+                stix2.utils.STIXdatetime.now()
+            ),
+            "created_by_ref": producer.id,
+        }
+        if labels:
+            sec_kwargs["labels"] = labels
+        sec = stix2.Indicator(**sec_kwargs)
+        objects.append(sec)
+        secondary_indicator_ids.append(sec.id)
+        if primary_id:
+            objects.append(stix2.Relationship(
+                source_ref=primary_id,
+                target_ref=sec.id,
+                relationship_type="related-to",
+                created_by_ref=producer.id,
+            ))
+
+    techniques = structured.get("mitre_techniques") or []
+    for raw_tech in techniques[:25]:
+        if not isinstance(raw_tech, str):
+            continue
+        tech = raw_tech.strip().upper()
+        if not re.match(r"^T[A]?\d{1,6}(\.\d{1,3})?$", tech):
+            continue
+        url_path = tech.replace(".", "/")
+        ap = stix2.AttackPattern(
+            name=tech,
+            created_by_ref=producer.id,
+            external_references=[{
+                "source_name": "mitre-attack",
+                "external_id": tech,
+                "url": f"https://attack.mitre.org/techniques/{url_path}/",
+            }],
+        )
+        objects.append(ap)
+        if primary_id:
+            objects.append(stix2.Relationship(
+                source_ref=primary_id,
+                target_ref=ap.id,
+                relationship_type="related-to",
+                created_by_ref=producer.id,
+            ))
+
+    recommendations = [
+        r.strip() for r in (structured.get("recommendations") or [])
+        if isinstance(r, str) and r.strip()
+    ][:25]
+    if recommendations and primary_id:
+        body = "Recommended actions:\n" + "\n".join(
+            f"- {_safe(r, max_len=300)}" for r in recommendations
+        )
+        note = stix2.Note(
+            content=body,
+            object_refs=[primary_id],
+            created_by_ref=producer.id,
+            abstract="Recommended actions",
+        )
+        objects.append(note)
+
+    return stix2.Bundle(objects=objects, allow_custom=False)
+
+
 def display_results(results: Dict[str, Any], output_format: str = "pretty"):
     """
     Display analysis results in the specified format.
 
     Args:
         results: Analysis results from the API
-        output_format: Output format (pretty, json, table)
+        output_format: Output format (pretty, json, table, stix)
     """
     if output_format == "json":
         console.print_json(json.dumps(results, indent=2))
+        return
+
+    if output_format == "stix":
+        if not STIX2_AVAILABLE:
+            err_console.print(Panel(
+                "[red]The stix2 library is not installed.[/red]\n\n"
+                "Install with one of:\n"
+                "  [cyan]pip install stix2[/cyan]\n"
+                "  [cyan]pip install -r requirements.txt[/cyan]",
+                title="Missing dependency for --output stix",
+                border_style="red",
+            ))
+            sys.exit(1)
+        if results.get("error"):
+            err_console.print(Panel(
+                f"[red]{_safe(results['error'], max_len=600)}[/red]",
+                title="Error",
+                border_style="red",
+            ))
+            sys.exit(1)
+        try:
+            bundle = _to_stix_bundle(results)
+        except Exception as e:
+            err_console.print(Panel(
+                f"[red]Failed to build STIX bundle: "
+                f"{_safe(str(e), max_len=400)}[/red]",
+                title="STIX export error",
+                border_style="red",
+            ))
+            sys.exit(1)
+        sys.stdout.write(bundle.serialize(indent=2))
+        sys.stdout.write("\n")
         return
 
     if results.get("error"):
@@ -892,6 +1260,9 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
 
         target_safe = _safe(results.get("target", ""), max_len=200)
         title = f"Analysis: {target_safe}" if target_safe else "IOC Analysis"
+        engine_line = _format_engine_line(results)
+        if engine_line:
+            console.print(engine_line)
         analysis_md = results.get("analysis") or results.get("summary") or ""
         if analysis_md:
             if not isinstance(analysis_md, str):
@@ -1124,7 +1495,12 @@ Copyright (c) 2026 byFranke - Security Solutions
 
     parser.add_argument(
         "--token",
-        help="API authentication token"
+        help=(
+            "API authentication token. Convenient for one-shot calls; "
+            "for daily use prefer `python3 setup.py` (encrypted at rest) "
+            "or the SHEEP_API_TOKEN env var, since command-line flags "
+            "are visible in process listings (ps, /proc/<pid>/cmdline)."
+        ),
     )
 
     parser.add_argument(
@@ -1134,9 +1510,15 @@ Copyright (c) 2026 byFranke - Security Solutions
 
     parser.add_argument(
         "-o", "--output",
-        choices=["pretty", "json", "table"],
+        choices=["pretty", "json", "table", "stix"],
         default="pretty",
-        help="Output format (default: pretty)"
+        help=(
+            "Output format. pretty (default) renders a colored summary; "
+            "json emits the raw Sheep schema; table emits a tabular view; "
+            "stix emits a STIX 2.1 Bundle (Indicator / Vulnerability / "
+            "AttackPattern / Note SDOs) ready to import in MISP, OpenCTI, "
+            "TheHive or any TAXII-aware tool."
+        ),
     )
 
     parser.add_argument(
@@ -1185,8 +1567,8 @@ Copyright (c) 2026 byFranke - Security Solutions
 
     if args.about:
         about_info = f"""
-[bold cyan]Analyze-CLI v{VERSION}[/bold cyan]
-IOC Analysis & Threat Intelligence Tool
+[bold cyan]Sheep Analyze v{VERSION}[/bold cyan]
+IOC analysis client for the Sheep API
 
 [bold]Copyright:[/bold] © 2026 byFranke - Security Solutions
 [bold]License:[/bold] byFranke License
@@ -1202,7 +1584,7 @@ Integrates with multiple threat intelligence sources:
 • URLScan
 • And more...
         """
-        console.print(Panel(about_info, title="About Analyze-CLI", style="cyan"))
+        console.print(Panel(about_info, title="About Sheep Analyze", style="cyan"))
         return
 
     if args.logout:
