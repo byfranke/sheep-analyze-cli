@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Analyze-CLI Interactive Setup Wizard
+Sheep Analyze CLI — interactive setup wizard.
 Copyright (c) 2026 byFranke - Security Solutions
 """
 
@@ -98,14 +98,20 @@ except ImportError:
 
 console = Console()
 
-GITHUB_REPO = "https://github.com/byfranke/analyze-cli"
-CONFIG_DIR = Path.home() / ".analyze-cli"
+GITHUB_REPO = "https://github.com/byfranke/sheep-analyze-cli"
+CONFIG_DIR = Path.home() / ".analyze"
+LEGACY_CONFIG_DIR = Path.home() / ".analyze-cli"
 CONFIG_FILE = CONFIG_DIR / "config.ini"
+LEGACY_CONFIG_FILE = LEGACY_CONFIG_DIR / "config.ini"
 KEY_FILE = CONFIG_DIR / ".key"
 VERSION_FILE = Path(__file__).parent / "VERSION"
 PRIVACY_POLICY = "https://sheep.byfranke.com/pages/privacy.html"
 TERMS_OF_SERVICE = "https://sheep.byfranke.com/pages/terms.html"
 SUPPORT_EMAIL = "support@byfranke.com"
+KEYRING_SERVICE = "sheep-analyze"
+LEGACY_KEYRING_SERVICE = "analyze-cli"
+BINARY_NAME = "analyze"
+LEGACY_BINARY_NAME = "analyze-cli"
 
 
 class SecureTokenManager:
@@ -195,7 +201,12 @@ class SecureTokenManager:
             return False
 
         try:
-            keyring.set_password("analyze-cli", "api_token", token)
+            keyring.set_password(KEYRING_SERVICE, "api_token", token)
+            try:
+                if keyring.get_password(LEGACY_KEYRING_SERVICE, "api_token"):
+                    keyring.delete_password(LEGACY_KEYRING_SERVICE, "api_token")
+            except Exception:
+                pass
             return True
         except Exception as e:
             console.print(f"[yellow]Warning: Could not use system keyring: {e}[/yellow]")
@@ -375,7 +386,9 @@ By continuing, you agree to our terms and privacy policy.
             return
 
         try:
-            install_dir = Path.home() / ".analyze-cli"
+            install_dir = CONFIG_DIR
+            if not (install_dir / ".git").exists() and (LEGACY_CONFIG_DIR / ".git").exists():
+                install_dir = LEGACY_CONFIG_DIR
 
             if (install_dir / ".git").exists():
                 console.print("Pulling latest updates...")
@@ -386,7 +399,7 @@ By continuing, you agree to our terms and privacy policy.
             else:
                 console.print(f"[yellow]Repository not found at {install_dir}[/yellow]")
                 console.print(f"To reinstall, run:")
-                console.print(f"  curl -fsSL https://raw.githubusercontent.com/byfranke/analyze-cli/main/install.sh | bash")
+                console.print(f"  curl -fsSL https://raw.githubusercontent.com/byfranke/sheep-analyze-cli/main/install.sh | bash")
                 return
 
             version_file = install_dir / "VERSION"
@@ -401,20 +414,36 @@ By continuing, you agree to our terms and privacy policy.
             console.print(f"[yellow]Could not check for updates: {e}[/yellow]")
 
     def check_system_installation(self):
-        """Check if analyze-cli is accessible from PATH"""
+        """Check whether the analyze command is accessible from PATH."""
         console.print("\n[bold cyan]Checking Installation[/bold cyan]")
 
         try:
             import shutil
-            path = shutil.which("analyze-cli")
-            if path:
-                console.print(f"[green][OK][/green] analyze-cli is available at: {path}")
+            primary = shutil.which(BINARY_NAME)
+            if primary:
+                console.print(f"[green][OK][/green] {BINARY_NAME} is available at: {primary}")
+                legacy = shutil.which(LEGACY_BINARY_NAME)
+                if legacy and legacy != primary:
+                    console.print(
+                        f"[dim]Legacy alias {LEGACY_BINARY_NAME} also present at "
+                        f"{legacy} (kept for backwards compatibility).[/dim]"
+                    )
                 return True
-            else:
-                console.print("[yellow]analyze-cli not found in PATH[/yellow]")
-                console.print("To reinstall, run:")
-                console.print("  curl -fsSL https://raw.githubusercontent.com/byfranke/analyze-cli/main/install.sh | bash")
-                return False
+            legacy = shutil.which(LEGACY_BINARY_NAME)
+            if legacy:
+                console.print(
+                    f"[yellow]Found legacy alias {LEGACY_BINARY_NAME} at "
+                    f"{legacy}, but the {BINARY_NAME} command is missing. "
+                    f"Re-run install.sh to refresh both.[/yellow]"
+                )
+                return True
+            console.print(f"[yellow]{BINARY_NAME} not found in PATH[/yellow]")
+            console.print("To reinstall, run:")
+            console.print(
+                "  curl -fsSL https://raw.githubusercontent.com/"
+                "byfranke/sheep-analyze-cli/main/install.sh | bash"
+            )
+            return False
         except Exception:
             return False
 
@@ -427,15 +456,15 @@ By continuing, you agree to our terms and privacy policy.
 [bold]Quick Start Guide:[/bold]
 
 1. Test your installation:
-   [cyan]analyze-cli --version[/cyan]
+   [cyan]{BINARY_NAME} --version[/cyan]
 
 2. Analyze an IOC:
-   [cyan]analyze-cli 8.8.8.8[/cyan]
-   [cyan]analyze-cli example.com[/cyan]
-   [cyan]analyze-cli CVE-2021-44228[/cyan]
+   [cyan]{BINARY_NAME} 8.8.8.8[/cyan]
+   [cyan]{BINARY_NAME} example.com[/cyan]
+   [cyan]{BINARY_NAME} CVE-2021-44228[/cyan]
 
 3. Get help:
-   [cyan]analyze-cli --help[/cyan]
+   [cyan]{BINARY_NAME} --help[/cyan]
 
 4. Check for updates:
    [cyan]python3 setup.py --update[/cyan]
