@@ -127,7 +127,7 @@ analyze 8.8.8.8 --output stix > ioc.json
 # TheHive 5 via Cortex, or any TAXII 2.1 server with curl.
 ```
 
-The exporter requires the [`stix2`](https://stix2.readthedocs.io/) library (already in `requirements.txt`). If it is missing, `--output stix` exits with a clear "Missing dependency" message and the pip command to install it.
+The bundle is built server-side by the Sheep API (`?format=stix` query parameter on `/api/ai/analyze`) and streamed back over the same call. The CLI has no STIX dependency to install — Sheep is the single source of truth for the format, and every customer always gets the same canonical mapping.
 
 ### Plan and quota
 
