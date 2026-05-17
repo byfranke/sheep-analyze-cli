@@ -41,14 +41,9 @@ try:
 except ImportError:
     ENCRYPTION_AVAILABLE = False
 
-try:
-    import stix2
-    STIX2_AVAILABLE = True
-except ImportError:
-    STIX2_AVAILABLE = False
-
 _VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
-VERSION = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else "2.0.0"
+VERSION = _VERSION_FILE.read_text().strip() if _VERSION_FILE.exists() else "2.2.0"
+
 DEFAULT_API_BASE = "https://sheep.byfranke.com"
 ANALYZE_PATH = "/api/ai/analyze"
 PROFILE_PATH = "/api/profile"
@@ -458,6 +453,7 @@ class IOCAnalyzer:
         self,
         target: str,
         ioc_type: Optional[str] = None,
+        api_format: str = "markdown",
     ) -> Dict[str, Any]:
         """
         Analyze an IOC using the API.
@@ -465,6 +461,17 @@ class IOCAnalyzer:
         Args:
             target: The IOC to analyze.
             ioc_type: Type of IOC (auto-detected if not provided).
+            api_format: Wire response format the server should produce.
+                'markdown' (default) — full AnalysisResult with the
+                markdown narrative + structured_analysis. Backwards
+                compatible with older API deployments that don't know
+                the format parameter.
+                'json' — same shape minus the markdown ``analysis``
+                field. Lighter for SIEM/SOAR pipelines.
+                'stix' — replaces the body with a STIX 2.1 Bundle
+                served by the API at ``Content-Type:
+                application/stix+json;version=2.1``. The CLI returns
+                the parsed bundle dict.
 
         Returns:
             Analysis results from the API. The /analyze endpoint runs
@@ -486,6 +493,14 @@ class IOCAnalyzer:
             "type": ioc_type,
         }
 
+        fmt = (api_format or "markdown").strip().lower()
+        if fmt not in ("markdown", "json", "stix"):
+            fmt = "markdown"
+        request_url = self.api_url
+        if fmt != "markdown":
+            sep = "&" if "?" in request_url else "?"
+            request_url = f"{request_url}{sep}format={fmt}"
+
         try:
             with Progress(
                 SpinnerColumn(),
@@ -499,7 +514,7 @@ class IOCAnalyzer:
                 )
 
                 response = requests.post(
-                    self.api_url,
+                    request_url,
                     headers=headers,
                     json=payload,
                     timeout=DEFAULT_TIMEOUT
@@ -940,265 +955,6 @@ def _summarize_source(name: str, data: Dict[str, Any]) -> str:
     return ", ".join(items)
 
 
-_STIX_PRODUCER_NAME = "Sheep AI"
-_STIX_PRODUCER_DESC = (
-    "Sheep API analysis result exported as STIX 2.1 by sheep-analyze-cli."
-)
-_STIX_VERDICT_LABELS = {
-    "malicious": ["malicious-activity"],
-    "suspicious": ["anomalous-activity"],
-    "benign": ["benign"],
-    "inconclusive": ["unknown"],
-}
-_STIX_HASH_LEN_TO_TYPE = {32: "MD5", 40: "SHA-1", 64: "SHA-256"}
-_STIX_HEX_RE = re.compile(r"^[A-Fa-f0-9]+$")
-_STIX_CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,7}$", re.IGNORECASE)
-_STIX_FORBIDDEN_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
-
-
-def _stix_pattern_for(ioc_type: str, value: str) -> Optional[str]:
-    """Return a STIX 2.1 pattern for a single observable.
-
-    Supported types:
-      - ``ip``      → ``[ipv4-addr:value = '…']`` (IPv6 routed automatically)
-      - ``domain``  → ``[domain-name:value = '…']``
-      - ``url``     → ``[url:value = '…']``
-      - ``hash`` /
-        ``hash_md5`` / ``hash_sha1`` / ``hash_sha256`` →
-        ``[file:hashes.'<ALGO>' = '…']``
-      - ``cve``     → handled as a Vulnerability SDO, not an Indicator
-        pattern. Returns ``None`` so the caller renders the right SDO.
-
-    Returns ``None`` for unsupported types or invalid values. Single
-    quotes inside the value are doubled per STIX 2.1 pattern grammar.
-    Values containing control characters (CR/LF, NUL, escape codes) are
-    rejected — a clean IOC never has them, and a STIX consumer
-    rendering the bundle in HTML / a terminal should not have to defend
-    against smuggled newlines.
-    """
-    if not value or not isinstance(value, str):
-        return None
-    if _STIX_FORBIDDEN_CHARS_RE.search(value):
-        return None
-    safe = value.strip().replace("'", "''")
-    if not safe:
-        return None
-    t = (ioc_type or "").strip().lower()
-    if t in ("ip", "ipv4", "ipv6", "ip_addr"):
-        if ":" in safe:
-            return f"[ipv6-addr:value = '{safe}']"
-        return f"[ipv4-addr:value = '{safe}']"
-    if t == "domain":
-        return f"[domain-name:value = '{safe}']"
-    if t == "url":
-        return f"[url:value = '{safe}']"
-    if t in ("hash", "hash_md5", "hash_sha1", "hash_sha256"):
-        algo = None
-        if t == "hash_md5":
-            algo = "MD5"
-        elif t == "hash_sha1":
-            algo = "SHA-1"
-        elif t == "hash_sha256":
-            algo = "SHA-256"
-        else:
-            if _STIX_HEX_RE.match(safe):
-                algo = _STIX_HASH_LEN_TO_TYPE.get(len(safe))
-        if not algo:
-            return None
-        return f"[file:hashes.'{algo}' = '{safe}']"
-    return None
-
-
-def _to_stix_bundle(results: Dict[str, Any]) -> "stix2.Bundle":
-    """Convert a Sheep ``AnalysisResult`` payload into a STIX 2.1 Bundle.
-
-    Mapping:
-      - ``Identity`` SDO names the producer ("Sheep AI").
-      - The primary target becomes an ``Indicator`` SDO (when an IOC
-        pattern fits) OR a ``Vulnerability`` SDO (for CVEs).
-      - ``structured_analysis.iocs_extracted`` adds one Indicator per
-        secondary IOC, related to the primary indicator via
-        ``Relationship`` SDOs (``related-to``).
-      - ``structured_analysis.mitre_techniques`` add ``AttackPattern``
-        SDOs with ``external_references`` pointing at the MITRE ATT&CK
-        registry. Each is related to the primary indicator.
-      - ``structured_analysis.recommendations`` (when present) become
-        a single ``Note`` SDO listing each recommendation as a bullet.
-      - ``structured_analysis.verdict`` maps to indicator ``labels``
-        using the standard STIX ``indicator-type-ov`` vocabulary.
-      - ``structured_analysis.confidence`` is propagated when set.
-
-    The function NEVER raises on a malformed input — it produces the
-    best-effort bundle and skips fields that don't fit STIX 2.1. The
-    only required object in the bundle is the Identity SDO + one
-    primary indicator/vulnerability.
-    """
-    if not STIX2_AVAILABLE:
-        raise RuntimeError(
-            "stix2 is not installed. Install with: pip install stix2"
-        )
-
-    target = (results.get("target") or "").strip()
-    ioc_type = (results.get("type") or "").strip().lower()
-    structured = results.get("structured_analysis") or {}
-    verdict = (structured.get("verdict") or "").strip().lower()
-    confidence_raw = structured.get("confidence")
-    summary = (structured.get("summary") or "").strip()
-
-    objects: List[Any] = []
-
-    producer = stix2.Identity(
-        name=_STIX_PRODUCER_NAME,
-        identity_class="organization",
-        description=_STIX_PRODUCER_DESC,
-    )
-    objects.append(producer)
-
-    labels = _STIX_VERDICT_LABELS.get(verdict)
-
-    def _confidence_kwargs() -> Dict[str, Any]:
-        try:
-            c = int(confidence_raw)
-            if 0 <= c <= 100:
-                return {"confidence": c}
-        except (TypeError, ValueError):
-            pass
-        return {}
-
-    primary_id: Optional[str] = None
-
-    if ioc_type == "cve" or _STIX_CVE_RE.match(target):
-        vuln_kwargs: Dict[str, Any] = {
-            "name": target,
-            "description": summary or f"Vulnerability {target}",
-            "created_by_ref": producer.id,
-            "external_references": [{
-                "source_name": "cve",
-                "external_id": target,
-                "url": f"https://nvd.nist.gov/vuln/detail/{target}",
-            }],
-        }
-        vuln_kwargs.update(_confidence_kwargs())
-        vuln = stix2.Vulnerability(**vuln_kwargs)
-        objects.append(vuln)
-        primary_id = vuln.id
-    else:
-        pattern = _stix_pattern_for(ioc_type, target)
-        if pattern:
-            ind_kwargs: Dict[str, Any] = {
-                "name": target,
-                "description": summary or f"Sheep AI analysis of {target}",
-                "pattern_type": "stix",
-                "pattern": pattern,
-                "valid_from": stix2.utils.format_datetime(
-                    stix2.utils.STIXdatetime.now()
-                ),
-                "created_by_ref": producer.id,
-            }
-            if labels:
-                ind_kwargs["labels"] = labels
-            ind_kwargs.update(_confidence_kwargs())
-            primary = stix2.Indicator(**ind_kwargs)
-            objects.append(primary)
-            primary_id = primary.id
-
-    iocs = structured.get("iocs_extracted") or []
-    secondary_indicator_ids: List[str] = []
-    for item in iocs[:25]:
-        if not isinstance(item, dict):
-            continue
-        sec_type = (item.get("type") or "").strip().lower()
-        sec_value = (item.get("value") or "").strip()
-        if not sec_type or not sec_value:
-            continue
-        if sec_type == "cve" or _STIX_CVE_RE.match(sec_value):
-            vuln = stix2.Vulnerability(
-                name=sec_value,
-                created_by_ref=producer.id,
-                external_references=[{
-                    "source_name": "cve",
-                    "external_id": sec_value,
-                    "url": f"https://nvd.nist.gov/vuln/detail/{sec_value}",
-                }],
-            )
-            objects.append(vuln)
-            if primary_id:
-                objects.append(stix2.Relationship(
-                    source_ref=primary_id,
-                    target_ref=vuln.id,
-                    relationship_type="related-to",
-                    created_by_ref=producer.id,
-                ))
-            continue
-        pattern = _stix_pattern_for(sec_type, sec_value)
-        if not pattern:
-            continue
-        sec_kwargs: Dict[str, Any] = {
-            "name": sec_value,
-            "pattern_type": "stix",
-            "pattern": pattern,
-            "valid_from": stix2.utils.format_datetime(
-                stix2.utils.STIXdatetime.now()
-            ),
-            "created_by_ref": producer.id,
-        }
-        if labels:
-            sec_kwargs["labels"] = labels
-        sec = stix2.Indicator(**sec_kwargs)
-        objects.append(sec)
-        secondary_indicator_ids.append(sec.id)
-        if primary_id:
-            objects.append(stix2.Relationship(
-                source_ref=primary_id,
-                target_ref=sec.id,
-                relationship_type="related-to",
-                created_by_ref=producer.id,
-            ))
-
-    techniques = structured.get("mitre_techniques") or []
-    for raw_tech in techniques[:25]:
-        if not isinstance(raw_tech, str):
-            continue
-        tech = raw_tech.strip().upper()
-        if not re.match(r"^T[A]?\d{1,6}(\.\d{1,3})?$", tech):
-            continue
-        url_path = tech.replace(".", "/")
-        ap = stix2.AttackPattern(
-            name=tech,
-            created_by_ref=producer.id,
-            external_references=[{
-                "source_name": "mitre-attack",
-                "external_id": tech,
-                "url": f"https://attack.mitre.org/techniques/{url_path}/",
-            }],
-        )
-        objects.append(ap)
-        if primary_id:
-            objects.append(stix2.Relationship(
-                source_ref=primary_id,
-                target_ref=ap.id,
-                relationship_type="related-to",
-                created_by_ref=producer.id,
-            ))
-
-    recommendations = [
-        r.strip() for r in (structured.get("recommendations") or [])
-        if isinstance(r, str) and r.strip()
-    ][:25]
-    if recommendations and primary_id:
-        body = "Recommended actions:\n" + "\n".join(
-            f"- {_safe(r, max_len=300)}" for r in recommendations
-        )
-        note = stix2.Note(
-            content=body,
-            object_refs=[primary_id],
-            created_by_ref=producer.id,
-            abstract="Recommended actions",
-        )
-        objects.append(note)
-
-    return stix2.Bundle(objects=objects, allow_custom=False)
-
 
 def display_results(results: Dict[str, Any], output_format: str = "pretty"):
     """
@@ -1213,16 +969,6 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
         return
 
     if output_format == "stix":
-        if not STIX2_AVAILABLE:
-            err_console.print(Panel(
-                "[red]The stix2 library is not installed.[/red]\n\n"
-                "Install with one of:\n"
-                "  [cyan]pip install stix2[/cyan]\n"
-                "  [cyan]pip install -r requirements.txt[/cyan]",
-                title="Missing dependency for --output stix",
-                border_style="red",
-            ))
-            sys.exit(1)
         if results.get("error"):
             err_console.print(Panel(
                 f"[red]{_safe(results['error'], max_len=600)}[/red]",
@@ -1230,19 +976,23 @@ def display_results(results: Dict[str, Any], output_format: str = "pretty"):
                 border_style="red",
             ))
             sys.exit(1)
-        try:
-            bundle = _to_stix_bundle(results)
-        except Exception as e:
-            err_console.print(Panel(
-                f"[red]Failed to build STIX bundle: "
-                f"{_safe(str(e), max_len=400)}[/red]",
-                title="STIX export error",
-                border_style="red",
-            ))
-            sys.exit(1)
-        sys.stdout.write(bundle.serialize(indent=2))
-        sys.stdout.write("\n")
-        return
+        if results.get("type") == "bundle" and "objects" in results:
+            sys.stdout.write(json.dumps(results, indent=2, ensure_ascii=False))
+            sys.stdout.write("\n")
+            return
+        err_console.print(Panel(
+            "[red]The Sheep API did not return a STIX 2.1 Bundle for "
+            "this request.[/red]\n\n"
+            "This usually means the API endpoint is older than "
+            "expected and does not understand the [cyan]?format=stix[/cyan] "
+            "query parameter. Make sure your [cyan]--api-url[/cyan] points "
+            "to a current Sheep API deployment, or fall back to "
+            "[cyan]--output json[/cyan] / [cyan]pretty[/cyan].\n\n"
+            f"Support: {SUPPORT_EMAIL}",
+            title="STIX response unavailable",
+            border_style="red",
+        ))
+        sys.exit(1)
 
     if results.get("error"):
         err_console.print(Panel(
@@ -1635,7 +1385,12 @@ Integrates with multiple threat intelligence sources:
 
     try:
         analyzer = IOCAnalyzer(api_token=args.token, api_url=args.api_url)
-        results = analyzer.analyze(args.target, args.type)
+        # Map the CLI's user-facing --output choice to the wire format
+        # the server should produce. stix → server emits a STIX 2.1
+        # Bundle directly; json → server omits the markdown narrative;
+        # pretty/table → CLI needs the full payload to render locally.
+        wire_format = "stix" if args.output == "stix" else "markdown"
+        results = analyzer.analyze(args.target, args.type, api_format=wire_format)
         display_results(results, args.output)
 
     except ValueError as e:
