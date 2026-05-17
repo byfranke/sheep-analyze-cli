@@ -1,191 +1,174 @@
-# Analyze-CLI
+# Sheep Analyze CLI
 
-A robust command-line interface for analyzing Indicators of Compromise (IOCs) including IPs, domains, hashes, URLs, and CVEs using multiple threat intelligence sources.
+Command-line client for the Sheep API focused on Indicator of Compromise (IOC) analysis: IPs, domains, file hashes, URLs and CVEs. Each request is enriched with threat intelligence and answered by a Sheep AI model with both a human-readable narrative and a SOAR-friendly structured payload.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=-NZARpdcJKk">
-    <img src="https://img.youtube.com/vi/-NZARpdcJKk/maxresdefault.jpg" alt="Analyze-CLI — Quick Summary" width="600">
+    <img src="https://img.youtube.com/vi/-NZARpdcJKk/maxresdefault.jpg" alt="Sheep Analyze CLI — quick summary" width="600">
   </a>
 </p>
 
 <p align="center">
-  <strong>A robust command-line interface for analyzing Indicators of Compromise</strong><br>
-  Version 1.2 | byFranke 2026
+  <strong>IOC analysis from your terminal, powered by the Sheep API.</strong><br>
+  Version 1.3 | byFranke 2026
 </p>
 
 ---
-
 
 <img width="2127" height="723" alt="image" src="https://github.com/user-attachments/assets/fd784e35-ada8-41e7-95ae-66363ed2515b" />
 
 ---
 
-**About more:** [Analyze Web](https://byfranke.com/pages/analyze.html) | [Sheep Manual](https://github.com/byfranke/sheep)
+**More:** [Analyze on the Sheep site](https://sheep.byfranke.com/pages/analyze.html) | [Sheep manual](https://github.com/byfranke/sheep)
 
 ## Installation
 
 ### Prerequisites
 
 - Python 3.7 or higher
-- pip package manager
+- pip
 
-### Get Analyze CLI
+### Quick install
 
 ```bash
-# Run the interactive setup wizard (recommended)
-curl -fsSL https://byfranke.com/analyze-cli-install | bash
+curl -fsSL https://raw.githubusercontent.com/byfranke/sheep-analyze-cli/main/install.sh | bash
 ```
 
-### Install from Source
+### Install from source
 
 ```bash
-# Or install manually
-git clone https://github.com/byfranke/analyze-cli
-cd analyze-cli
+git clone https://github.com/byfranke/sheep-analyze-cli
+cd sheep-analyze-cli
 chmod +x analyze-cli.py setup.py install.sh
 bash install.sh
 python3 setup.py
 ```
 
+The installer creates two symlinks: `analyze` (canonical) and `analyze-cli` (legacy alias kept for backwards compatibility). Use whichever you prefer — every example below uses `analyze`.
+
 ## Configuration
 
-### Secure Token Setup
-
-Run the interactive setup wizard to configure your encrypted token:
+### Encrypted setup (recommended)
 
 ```bash
 python3 setup.py
 ```
 
-The setup will:
+The wizard will:
 - Ask for your [API token](https://sheep.byfranke.com/pages/store)
 - Set a master password for encryption
-- Store your token encrypted in `~/.analyze-cli/config.ini`
-- Require the master password **only once per terminal session** (cached in `/tmp` with mode `0600`, scoped to your shell's Session ID)
+- Store the encrypted token at `~/.analyze/config.ini`
+- Cache the decrypted token in `/tmp` (mode `0600`, scoped to the current shell session) so you only type the master password once per terminal
 
-### Alternative: One-time Use
-
-For single-use or testing, you can pass the token directly:
+### One-shot
 
 ```bash
-./analyze-cli.py --token "your_api_token_here" 185.220.101.45
+analyze --token "YOUR_TOKEN" 185.220.101.45
 ```
 
 Or via environment variable:
 
 ```bash
-export SHEEP_API_TOKEN="your_api_token_here"
-./analyze-cli.py 185.220.101.45
+export SHEEP_API_TOKEN="YOUR_TOKEN"
+analyze 185.220.101.45
 ```
 
-> The legacy variable `ANALYZE_API_TOKEN` is still accepted but prints a deprecation warning. It will be removed in v1.5. The same `SHEEP_API_TOKEN` works across every Sheep CLI.
+The legacy variable `ANALYZE_API_TOKEN` is still accepted with a deprecation warning and will be removed in v1.5. `SHEEP_API_TOKEN` is the same variable used by every other Sheep CLI.
 
-**Security**: Your token is always encrypted and password-protected when stored. Encryption uses PBKDF2-SHA256 (600,000 iterations) with a per-install random salt and Fernet (AES-128 + HMAC-SHA256).
+**Storage:** the token is encrypted using PBKDF2-SHA256 (600,000 iterations) with a per-install random salt and Fernet (AES-128 + HMAC-SHA256).
+
+**Upgrading from analyze-cli 1.2:** the new config dir is `~/.analyze/`. The CLI keeps reading `~/.analyze-cli/config.ini` if it exists, so you can upgrade without re-running setup. Re-run `python3 setup.py` whenever you want to migrate.
 
 ## Usage
 
-### Basic Usage
+### Basic
 
 ```bash
-# Analyze an IP address (auto-detect type)
-./analyze-cli.py 185.220.101.45
-
-# Analyze a domain
-./analyze-cli.py example.com
-
-# Analyze a file hash
-./analyze-cli.py d41d8cd98f00b204e9800998ecf8427e
-
-# Analyze a URL
-./analyze-cli.py https://suspicious-site.com/malware
-
-# Analyze a CVE
-./analyze-cli.py CVE-2021-44228
+analyze 185.220.101.45                  # IP (auto-detected)
+analyze example.com                     # Domain
+analyze d41d8cd98f00b204e9800998ecf8427e  # MD5 hash
+analyze https://suspicious-site.com/m   # URL
+analyze CVE-2021-44228                  # CVE
 ```
 
-### Output Formats
+### Which Sheep model is used
+
+Every `/analyze` call is served by the **Sheep Hunter** model. The CLI does not expose a model selector here — analysis is opinionated by design so latency, depth and billing stay consistent across calls. If you need the lighter Scout model or the heavier Sage model, use the `/ask` surface (see [Sheep Ask CLI](https://github.com/byfranke/sheep-ask-cli)) where the model selector is exposed.
+
+### Output formats
 
 ```bash
-# Pretty output (default) - colored terminal output
-./analyze-cli.py 8.8.8.8
-
-# JSON output - for parsing and automation
-./analyze-cli.py 8.8.8.8 --output json
-
-# Table output - simple tabular format
-./analyze-cli.py 8.8.8.8 --output table
+analyze 8.8.8.8                  # Pretty (default)
+analyze 8.8.8.8 --output json    # JSON, for automation / SOAR
+analyze 8.8.8.8 --output table   # Tabular summary
+analyze 8.8.8.8 --output stix    # STIX 2.1 Bundle (MISP / OpenCTI / TheHive)
 ```
 
-### Session Management
+The pretty output shows the verdict, confidence, the Sheep model that served the request, an executive summary, key findings, extracted IoCs, MITRE ATT&CK techniques, recommendations and references.
+
+### STIX 2.1 interop
+
+`--output stix` emits a STIX 2.1 Bundle (OASIS spec) on stdout, ready to feed into any tool that speaks STIX: MISP, OpenCTI, TheHive, Cortex Analyzers, ThreatConnect, Anomali, or your own TAXII collection. The mapping is:
+
+- **Identity** SDO — names the producer ("Sheep AI").
+- **Indicator** SDO — one per IOC, with a real STIX pattern (`[ipv4-addr:value = '…']`, `[domain-name:value = '…']`, `[file:hashes.'SHA-256' = '…']`, `[url:value = '…']`).
+- **Vulnerability** SDO — for CVE targets, with `external_references` to NVD.
+- **AttackPattern** SDO — one per MITRE ATT&CK technique, with `external_references` to the ATT&CK registry.
+- **Relationship** SDO — wires secondary IOCs and ATT&CK techniques back to the primary indicator (`related-to`).
+- **Note** SDO — recommended actions, attached to the primary indicator.
+- Verdict (`malicious` / `suspicious` / `benign` / `inconclusive`) is rendered as the STIX `indicator-type-ov` label.
+- Confidence (0–100) propagates to the Indicator / Vulnerability `confidence` field.
+
+Quick pipe-to-file example:
 
 ```bash
-# Clear the cached decrypted token for the current terminal only
-./analyze-cli.py --logout
+analyze 8.8.8.8 --output stix > ioc.json
+# Push to MISP via misp-stix-converter, OpenCTI via its STIX2 connector,
+# TheHive 5 via Cortex, or any TAXII 2.1 server with curl.
 ```
 
-After logout the next call will prompt for the master password again.
+The exporter requires the [`stix2`](https://stix2.readthedocs.io/) library (already in `requirements.txt`). If it is missing, `--output stix` exits with a clear "Missing dependency" message and the pip command to install it.
+
+### Plan and quota
+
+```bash
+analyze plan
+```
+
+Shows your plan name, status, period end, the models your plan allows, and the current token usage / remaining budget.
+
+### Session management
+
+```bash
+analyze --logout
+```
+
+Clears the cached decrypted token for the current terminal only. The next call will prompt for the master password again.
 
 ### Maintenance
 
 ```bash
-# Show help
-./analyze-cli.py --help
-
-# Show version
-./analyze-cli.py --version
-
-# Re-run the setup wizard
-./analyze-cli.py --setup
-
-# Check for updates from GitHub
-./analyze-cli.py --update
+analyze --help        # Show help
+analyze --version     # Show version
+analyze --setup       # Re-run the interactive setup wizard
+analyze --update      # Pull the latest version from GitHub
 ```
 
-### Common Issues
+## Common errors
 
-1. **API Token Error**
-   ```
-   Error: API token is required
-   ```
-   Solution: Configure your API token using one of the methods described above, or upgrade your plan at https://sheep.byfranke.com/pages/store.
+1. **API token missing** — Configure your token with `python3 setup.py`, the `--token` flag or the `SHEEP_API_TOKEN` env var. New tokens at https://sheep.byfranke.com/pages/store.
 
-2. **Authentication failed (HTTP 401)**
-   ```
-   Invalid API token. Your token is missing, expired, or no longer valid.
-   ```
-   Solution: Re-run `python3 setup.py` with a fresh token, or get/upgrade one at https://sheep.byfranke.com/pages/store.
+2. **HTTP 401 — Authentication failed** — Token missing, expired or revoked. Re-run `python3 setup.py` with a fresh token.
 
-3. **Plan does not cover this request (HTTP 403)**
-   ```
-   Forbidden — your plan doesn't cover this request.
-   ```
-   Solution: Upgrade your plan at https://sheep.byfranke.com/pages/store.
+3. **HTTP 403 — Plan does not cover this request** — Upgrade at https://sheep.byfranke.com/pages/store.
 
-4. **Too many requests (HTTP 429)**
-   ```
-   Rate limit exceeded.
-   ```
-   Solution: Wait a minute. If it happens often, upgrade your plan at https://sheep.byfranke.com/pages/store.
+4. **HTTP 429 — Rate limit exceeded** — Wait a minute. If it happens often, upgrade your plan.
 
-5. **Connection Error**
-   ```
-   Error: Failed to connect to API server
-   ```
-   Solution: Check your internet connection and verify the API URL is correct.
+5. **Connection error** — Check your internet connection.
 
-6. **Invalid IOC Type**
-   ```
-   Error: Invalid request
-   ```
-   Solution: Ensure the IOC format is correct or let the tool auto-detect the type.
+6. **Invalid IOC type** — Make sure the IOC format is correct, or let the auto-detector handle it.
 
-7. **Timeout Error**
-   ```
-   Error: Request timed out
-   ```
-   Solution: The analysis is taking longer than expected. Try again or check if the service is available.
-
-### Contributing
+## Contributing
 
 1. Fork the repository
 2. Create a feature branch
@@ -193,18 +176,17 @@ After logout the next call will prompt for the master password again.
 4. Run tests
 5. Submit a pull request
 
-## Security Considerations
+## Security considerations
 
-- **Never commit your API token** to version control
-- Store tokens securely using the setup wizard (encrypted) or `SHEEP_API_TOKEN`
-- Use restrictive permissions for config files:
+- **Never commit your API token** to version control.
+- Store tokens securely with the setup wizard (encrypted) or `SHEEP_API_TOKEN`.
+- Keep restrictive permissions on the config file:
   ```bash
-  chmod 600 ~/.analyze-cli/config.ini
+  chmod 600 ~/.analyze/config.ini
   ```
-- Session token cache lives in `/tmp/analyze-cli-sess-<uid>-<sid>` with mode `0600` and is bound to your current shell's Session ID. Run `--logout` to clear it early.
+- The session token cache lives at `/tmp/analyze-cli-sess-<uid>-<sid>` with mode `0600`, scoped to your current shell session. Run `analyze --logout` to clear it early.
 
-  
-## Donation Support
+## Donation support
 
 This tool is maintained through community support. Help keep it active:
 
