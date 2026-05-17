@@ -19,7 +19,7 @@ Command-line client for the Sheep API focused on Indicator of Compromise (IOC) a
 
 ---
 
-**More:** [Analyze on the Sheep site](https://sheep.byfranke.com/pages/analyze.html) | [Sheep manual](https://github.com/byfranke/sheep)
+**More:** [Analyze Web](https://byfranke.com/pages/analyze.html) | [Sheep Docs](https://github.com/byfranke/sheep)
 
 ## Installation
 
