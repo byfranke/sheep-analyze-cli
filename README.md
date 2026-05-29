@@ -10,7 +10,7 @@ Command-line client for the Sheep API focused on Indicator of Compromise (IOC) a
 
 <p align="center">
   <strong>IOC analysis from your terminal, powered by the Sheep API.</strong><br>
-  Version 2.2 | byFranke 2026
+  Version 2.2.0 | byFranke 2026
 </p>
 
 ---
@@ -73,7 +73,7 @@ export SHEEP_API_TOKEN="YOUR_TOKEN"
 analyze 185.220.101.45
 ```
 
-The legacy variable `ANALYZE_API_TOKEN` is still accepted with a deprecation warning and will be removed in v1.5. `SHEEP_API_TOKEN` is the same variable used by every other Sheep CLI.
+The legacy variable `ANALYZE_API_TOKEN` is still accepted with a deprecation warning and will be removed in a future release. `SHEEP_API_TOKEN` is the same variable used by every other Sheep CLI.
 
 **Storage:** the token is encrypted using PBKDF2-SHA256 (600,000 iterations) with a per-install random salt and Fernet (AES-128 + HMAC-SHA256).
 
@@ -93,7 +93,7 @@ analyze CVE-2021-44228                  # CVE
 
 ### Which Sheep model is used
 
-Every `/analyze` call is served by the **Sheep Hunter** model. The CLI does not expose a model selector here. Analysis is opinionated by design so latency, depth and billing stay consistent across calls. If you need the lighter Scout model or the heavier Sage model, use the `/ask` surface (see [Sheep Ask CLI](https://github.com/byfranke/sheep-ask-cli)) where the model selector is exposed.
+Every `/analyze` call is served by the **Sheep Hunter** model. The CLI does not expose a model selector here — analysis is opinionated by design so latency, depth and billing stay consistent across calls. If you need the lighter Scout model or the heavier Sage model, use the `/ask` surface (see [Sheep Ask CLI](https://github.com/byfranke/sheep-ask-cli)) where the model selector is exposed.
 
 ### Output formats
 
@@ -185,9 +185,3 @@ analyze --update      # Pull the latest version from GitHub
   chmod 600 ~/.analyze/config.ini
   ```
 - The session token cache lives at `/tmp/analyze-cli-sess-<uid>-<sid>` with mode `0600`, scoped to your current shell session. Run `analyze --logout` to clear it early.
-
-## Donation support
-
-This tool is maintained through community support. Help keep it active:
-
-[![Donate](https://img.shields.io/badge/Support-Development-blue?style=for-the-badge&logo=github)](https://buy.byfranke.com/b/8wM03kb3u7THeIgaEE)
